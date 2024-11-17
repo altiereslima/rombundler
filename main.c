@@ -35,6 +35,20 @@ void joystick_callback(int jid, int event)
 		printf("Joypad %d disconnected\n", jid);
 }
 
+static void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_ENTER && (mods & GLFW_MOD_ALT)) {
+        if (glfwGetWindowMonitor(window) == NULL) {
+            // Se estiver em modo janela, mude para tela cheia
+            GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+            const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+            glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+        } else {
+            // Se estiver em tela cheia, mude para modo janela
+            glfwSetWindowMonitor(window, NULL, 100, 100, g_cfg.window_width, g_cfg.window_height, 0);
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
 	cfg_defaults(&g_cfg);
 	if (ini_parse("./config.ini", cfg_handler, &g_cfg) < 0)
@@ -60,6 +74,9 @@ int main(int argc, char *argv[]) {
 	srm_load();
 
 	glfwSwapInterval(g_cfg.swap_interval);
+
+    // Registre a callback de teclado
+    glfwSetKeyCallback(window, key_callback);
 
 	unsigned frame = 0;
 	while (!glfwWindowShouldClose(window)) {

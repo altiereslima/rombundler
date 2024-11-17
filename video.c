@@ -311,13 +311,13 @@ void create_window(int width, int height)
 
 	glfwMakeContextCurrent(window);
 
-	// if (video.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) {
-	// 	if (!gladLoadGLES2Loader((GLADloadproc)glfwGetProcAddress))
-	// 		die("Failed to initialize glad.");
-	// } else {
-		if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
-			die("Failed to initialize glad.");
-	// }
+    if (video.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) {
+        if (!gladLoadGLES2Loader((GLADloadproc)glfwGetProcAddress))
+            die("Failed to initialize glad.");
+    } else {
+        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+            die("Failed to initialize glad.");
+    }
 
 	init_shaders();
 
