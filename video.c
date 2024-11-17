@@ -277,9 +277,6 @@ void create_window(int width, int height)
     case RETRO_HW_CONTEXT_OPENGL_CORE:
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         break;
-    case RETRO_HW_CONTEXT_OPENGLES2:
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-        break;
     case RETRO_HW_CONTEXT_OPENGL:
         if (video.hw.version_major >= 3)
             glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
@@ -308,13 +305,8 @@ void create_window(int width, int height)
 
     glfwMakeContextCurrent(window);
 
-    if (video.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) {
-        if (!gladLoadGLES2Loader((GLADloadproc)glfwGetProcAddress))
-            die("Failed to initialize glad.");
-    } else {
-        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
-            die("Failed to initialize glad.");
-    }
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+        die("Failed to initialize glad.");
 
     init_shaders();
 
