@@ -265,40 +265,66 @@ void video_set_rotation(unsigned rot)
 
 void create_window(int width, int height)
 {
-	if (video.hw.context_type == RETRO_HW_CONTEXT_OPENGL_CORE || video.hw.version_major >= 3) {
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, video.hw.version_major);
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, video.hw.version_minor);
-	}
-	else
-	{
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
-		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
-	}
+    if (video.hw.context_type == RETRO_HW_CONTEXT_OPENGL_CORE || video.hw.version_major >= 3) {
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, video.hw.version_major);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, video.hw.version_minor);
+    } else {
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    }
 
-	switch (video.hw.context_type) {
-		case RETRO_HW_CONTEXT_OPENGL_CORE:
-			glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-			break;
-		case RETRO_HW_CONTEXT_OPENGLES2:
-			glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
-			break;
-		case RETRO_HW_CONTEXT_OPENGL:
-			if (video.hw.version_major >= 3)
-				glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
-			break;
-		default:
-			die("Unsupported hw context %i. (only OPENGL, OPENGL_CORE and OPENGLES2 supported)", video.hw.context_type);
-	}
+    switch (video.hw.context_type) {
+    case RETRO_HW_CONTEXT_OPENGL_CORE:
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        break;
+    case RETRO_HW_CONTEXT_OPENGLES2:
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_ES_API);
+        break;
+    case RETRO_HW_CONTEXT_OPENGL:
+        if (video.hw.version_major >= 3)
+            glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
+        break;
+    default:
+        die("Unsupported hw context %i. (only OPENGL, OPENGL_CORE and OPENGLES2 supported)", video.hw.context_type);
+    }
 
-	GLFWmonitor* monitor = NULL;
-	if (g_cfg.fullscreen)
-	{
-		int count;
-		monitor = glfwGetPrimaryMonitor();
-		const GLFWvidmode *modes = glfwGetVideoModes(monitor, &count);
-		const GLFWvidmode mode = modes[count-1];
-		width = mode.width;
-		height = mode.height;
+    GLFWmonitor* monitor = NULL;
+    if (g_cfg.fullscreen) {
+        int count;
+        monitor = glfwGetPrimaryMonitor();
+        const GLFWvidmode *modes = glfwGetVideoModes(monitor, &count);
+        const GLFWvidmode mode = modes[count-1];
+        width = mode.width;
+        height = mode.height;
+    }
+
+    window = glfwCreateWindow(width, height, g_cfg.title, monitor, NULL);
+
+    if (!window)
+        die("Failed to create window.");
+
+    if (g_cfg.hide_cursor)
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
+
+    glfwMakeContextCurrent(window);
+
+    if (video.hw.context_type == RETRO_HW_CONTEXT_OPENGLES2) {
+        if (!gladLoadGLES2Loader((GLADloadproc)glfwGetProcAddress))
+            die("Failed to initialize glad.");
+    } else {
+        if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+            die("Failed to initialize glad.");
+    }
+
+    init_shaders();
+
+    glfwSwapInterval(1);
+
+    glEnable(GL_TEXTURE_2D);
+
+    // Inicialize as dimensões da janela
+    g_cfg.window_width = width;
+    g_cfg.window_height = height;
 	}
 
 	window = glfwCreateWindow(width, height, g_cfg.title, monitor, NULL);
