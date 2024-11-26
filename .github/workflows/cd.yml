@@ -42,7 +42,7 @@ jobs:
   build_windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - run: echo "VERSION=$(echo ${{ github.event.release.tag_name }} | cut -c 2-)" >> $GITHUB_ENV
       - run: choco install wget zip --ignore-checksums
       - run: mkdir lib
