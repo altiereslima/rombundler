@@ -11,25 +11,11 @@ defaults:
     shell: bash
 
 jobs:
-  build_linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - run: sudo apt-get update -q
-      - run: sudo apt-get install libopenal-dev xorg-dev libgl1-mesa-dev libglfw3-dev -y --allow-unauthenticated
-      - run: make
-
-  build_osx:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v2
-      - run: make
-
   build_windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v2
-      - run: choco install wget --ignore-checksums
+      - uses: actions/checkout@v4
+      - run: choco install wget 7zip -y --ignore-checksums
       - run: mkdir lib
       - run: wget --no-check-certificate http://www.openal-soft.org/openal-binaries/openal-soft-1.21.0-bin.zip
       - run: 7z x openal-soft-1.21.0-bin.zip -o/c/
@@ -41,3 +27,9 @@ jobs:
       - run: echo "CFLAGS=-I\"/c/openal-soft-1.21.0-bin/include/\" -I\"/c/glfw-3.3.4.bin.WIN64/include/\"" >> $GITHUB_ENV
       - run: echo "LDFLAGS=-L./lib" >> $GITHUB_ENV
       - run: CC=gcc make
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            ./*.exe
+            ./lib/*
