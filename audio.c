@@ -36,7 +36,12 @@ typedef struct al
 	ALCcontext *ctx;
 	size_t res_ptr;
 	size_t tmpbuf_ptr;
+	size_t resample_cap_frames;
+	uint64_t resample_accum;
+	int16_t *resample_buf;
+	int input_rate;
 	int rate;
+	bool needs_resample;
 	uint8_t tmpbuf[BUFSIZE];
 } al_t;
 
@@ -46,6 +51,9 @@ al_t* al = NULL;
 static int  current_volume = 100;   /* 0-100 */
 static bool current_mute   = false;
 static bool nonblocking    = false;
+
+#define MAX_DIRECT_AUDIO_RATE 192000
+#define DEFAULT_OUTPUT_RATE    48000
 
 static void apply_gain(void)
 {
@@ -95,6 +103,26 @@ static size_t fill_internal_buf(const void *buf, size_t size)
 	memcpy(al->tmpbuf + al->tmpbuf_ptr, buf, read_size);
 	al->tmpbuf_ptr += read_size;
 	return read_size;
+}
+
+static bool ensure_resample_capacity(size_t frames)
+{
+	int16_t *new_buf = NULL;
+	size_t samples = 0;
+
+	if (!al)
+		return false;
+	if (frames <= al->resample_cap_frames)
+		return true;
+
+	samples = frames * 2;
+	new_buf = (int16_t *)realloc(al->resample_buf, samples * sizeof(int16_t));
+	if (!new_buf)
+		return false;
+
+	al->resample_buf = new_buf;
+	al->resample_cap_frames = frames;
+	return true;
 }
 
 size_t audio_write(const void *buf_, unsigned size) {
@@ -149,6 +177,7 @@ void audio_deinit() {
 
 	free(al->buffers);
 	free(al->res_buf);
+	free(al->resample_buf);
 	alcMakeContextCurrent(NULL);
 
 	if (al->ctx)
@@ -174,7 +203,16 @@ void audio_init(int rate) {
 
 	alcMakeContextCurrent(al->ctx);
 
-	al->rate = rate;
+	al->input_rate = rate > 0 ? rate : DEFAULT_OUTPUT_RATE;
+	al->rate = al->input_rate;
+	al->needs_resample = al->input_rate > MAX_DIRECT_AUDIO_RATE;
+	if (al->needs_resample) {
+		al->rate = DEFAULT_OUTPUT_RATE;
+		log_printf("audio", "clamping core sample_rate=%d to output_rate=%d with lightweight resampler",
+			al->input_rate, al->rate);
+	} else {
+		log_printf("audio", "using direct audio rate=%d", al->rate);
+	}
 	al->buffers = (ALuint*)calloc(NUMBUFFERS, sizeof(ALuint));
 	al->res_buf = (ALuint*)calloc(NUMBUFFERS, sizeof(ALuint));
 	if (!al->buffers || !al->res_buf)
@@ -192,10 +230,44 @@ void audio_init(int rate) {
 
 void audio_sample(int16_t left, int16_t right) {
 	int16_t buf[2] = {left, right};
-	audio_write(buf, 4);
+	(void)audio_sample_batch(buf, 1);
 }
 
 size_t audio_sample_batch(const int16_t *data, size_t frames) {
+	if (!al || !data || frames == 0)
+		return 0;
+
+	if (al->needs_resample) {
+		size_t out_frames = 0;
+		size_t max_out_frames = (frames * (size_t)al->rate) / (size_t)al->input_rate + 8;
+		size_t i = 0;
+
+		if (!ensure_resample_capacity(max_out_frames))
+			return 0;
+
+		for (i = 0; i < frames; i++) {
+			al->resample_accum += (uint64_t)al->rate;
+			if (al->resample_accum < (uint64_t)al->input_rate)
+				continue;
+
+			do {
+				al->resample_buf[out_frames * 2 + 0] = data[i * 2 + 0];
+				al->resample_buf[out_frames * 2 + 1] = data[i * 2 + 1];
+				out_frames++;
+				al->resample_accum -= (uint64_t)al->input_rate;
+			} while (al->resample_accum >= (uint64_t)al->input_rate);
+		}
+
+		if (out_frames > 0) {
+			size_t written = audio_write(al->resample_buf, (unsigned)(out_frames * 4));
+			if (written == (size_t)-1)
+				return 0;
+		}
+
+		/* Consumimos todos os frames de entrada, mesmo gerando menos frames de saida. */
+		return frames;
+	}
+
 	size_t written = audio_write(data, (unsigned)(frames * 4));
 
 	if (written == (size_t)-1)

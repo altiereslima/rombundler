@@ -133,4 +133,3 @@ We recommand using the linear filter with the CRT and LCD shaders.
 Not yet compatible:
 
  * md_libretro (input issues)
- * sameboy_libretro (audio issues)
