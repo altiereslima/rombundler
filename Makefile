@@ -1,28 +1,33 @@
 TARGET := rombundler
 VERSION ?= devel
+UNAME_S := $(shell uname -s 2>NUL)
 
-ifeq ($(shell uname -s),) # win
+ifeq ($(OS),Windows_NT) # win
 	TARGET := rombundler.exe
-	LDFLAGS += -L./lib -lglfw3dll -lOpenal32.dll
-	LD := $(CC)
+	CFLAGS += -IC:/glfw-3.3.4.bin.WIN64/include -IC:/openal-soft-1.21.0-bin/include
+	LDFLAGS += -L./lib -L"C:\glfw-3.3.4.bin.WIN64/lib-mingw-w64" -L"C:\openal-soft-1.21.0-bin/libs/Win64" -static -lglfw3 -lopengl32 -lvulkan-1 -lgdi32 -luser32 -lkernel32 -lshell32 -lwinmm -lOpenAL32 -mwindows -static-libgcc -static-libstdc++
 	OS ?= Windows
-else ifneq ($(findstring MINGW,$(shell uname -s)),) # win
+else ifneq ($(findstring MINGW,$(UNAME_S)),) # win
 	TARGET := rombundler.exe
-	LDFLAGS += -L./lib -lglfw3dll -lOpenal32.dll -flto
-	LD := $(CC)
+	CFLAGS += -IC:/glfw-3.3.4.bin.WIN64/include -IC:/openal-soft-1.21.0-bin/include
+	LDFLAGS += -L./lib -L"C:\glfw-3.3.4.bin.WIN64/lib-mingw-w64" -L"C:\openal-soft-1.21.0-bin/libs/Win64" -static -lglfw3 -lopengl32 -lvulkan-1 -lgdi32 -luser32 -lkernel32 -lshell32 -lwinmm -lOpenAL32 -mwindows -static-libgcc -static-libstdc++
 	OS ?= Windows
-else ifneq ($(findstring Darwin,$(shell uname -s)),) # osx
-	LDFLAGS := -lglfw -flto -framework OpenAL
-	LD := $(CC)
+else ifneq ($(findstring Darwin,$(UNAME_S)),) # osx
+	LDFLAGS := -Ldeps/osx_$(shell uname -m)/lib -lglfw3 -framework Cocoa -framework OpenGL -framework IOKit
+	LDFLAGS += -framework OpenAL
 	OS ?= OSX
 else
-	LDFLAGS := -lglfw -flto -lopenal
+	LDFLAGS := -ldl
+	LDFLAGS += $(shell pkg-config --libs glfw3)
+	LDFLAGS += $(shell pkg-config --libs openal)
+	LDFLAGS += -lvulkan -pthread
+	CFLAGS += -pthread
 	OS ?= Linux
 endif
 
-CFLAGS += -Wall -O3 -fPIC -flto -I. -I./include
+CFLAGS += -Wall -O3 -fPIC -flto -I. -Iinclude -Ideps/include
 
-OBJ = main.o glad.o config.o audio.o video.o ini.o utils.o
+OBJ = main.o glad.o config.o core.o audio.o video.o video_vulkan.o input.o options.o ini.o utils.o srm.o menu.o font.o remap.o lang.o aspect.o
 
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)
@@ -31,7 +36,7 @@ OBJ = main.o glad.o config.o audio.o video.o ini.o utils.o
 
 all: $(TARGET)
 $(TARGET): $(OBJ)
-	$(LD) -o $@ $^ $(LDFLAGS)
+	$(CC) -o $@ $^ $(LDFLAGS) -flto
 
 bundle: $(TARGET)
 	mkdir -p ROMBundler-$(OS)-$(VERSION)
@@ -43,4 +48,4 @@ bundle: $(TARGET)
 	zip -r ROMBundler-$(OS)-$(VERSION).zip ROMBundler-$(OS)-$(VERSION)
 
 clean:
-	rm -f $(OBJ) $(TARGET) ROMBundler-*
+	rm -rf $(OBJ) $(TARGET) ROMBundler-*

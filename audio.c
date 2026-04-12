@@ -1,3 +1,7 @@
+/* ---------------------------------------------------------------
+ * audio.c — OpenAL audio with volume/mute control via AL_GAIN.
+ * --------------------------------------------------------------- */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -38,6 +42,18 @@ typedef struct al
 
 al_t* al = NULL;
 
+/* Volume state */
+static int  current_volume = 100;   /* 0-100 */
+static bool current_mute   = false;
+static bool nonblocking    = false;
+
+static void apply_gain(void)
+{
+	if (!al) return;
+	float gain = current_mute ? 0.0f : (float)current_volume / 100.0f;
+	alSourcef(al->source, AL_GAIN, gain);
+}
+
 static bool unqueue_buffers()
 {
 	ALint val;
@@ -56,10 +72,16 @@ static bool get_buffer(ALuint *buffer)
 {
 	if (!al->res_ptr)
 	{
-		for (;;)
-		{
-			if (unqueue_buffers())
-				break;
+		if (nonblocking) {
+			/* Try once, drop audio if no buffer available */
+			if (!unqueue_buffers())
+				return false;
+		} else {
+			for (;;)
+			{
+				if (unqueue_buffers())
+					break;
+			}
 		}
 	}
 
@@ -134,6 +156,7 @@ void audio_deinit() {
 	if (al->handle)
 		alcCloseDevice(al->handle);
 	free(al);
+	al = NULL;
 }
 
 void audio_init(int rate) {
@@ -162,4 +185,48 @@ void audio_init(int rate) {
 
 	memcpy(al->res_buf, al->buffers, NUMBUFFERS * sizeof(ALuint));
 	al->res_ptr = NUMBUFFERS;
+
+	/* Apply saved volume */
+	apply_gain();
+}
+
+void audio_sample(int16_t left, int16_t right) {
+	int16_t buf[2] = {left, right};
+	audio_write(buf, 4);
+}
+
+size_t audio_sample_batch(const int16_t *data, size_t frames) {
+	size_t written = audio_write(data, (unsigned)(frames * 4));
+
+	if (written == (size_t)-1)
+		return 0;
+
+	/* Libretro expects the number of frames consumed, not bytes. */
+	return written / 4;
+}
+
+/* ── Volume / Mute API ── */
+
+void audio_set_volume(int percent) {
+	if (percent < 0)   percent = 0;
+	if (percent > 100) percent = 100;
+	current_volume = percent;
+	apply_gain();
+}
+
+int audio_get_volume(void) {
+	return current_volume;
+}
+
+void audio_set_mute(bool mute) {
+	current_mute = mute;
+	apply_gain();
+}
+
+bool audio_get_mute(void) {
+	return current_mute;
+}
+
+void audio_set_nonblocking(bool enabled) {
+	nonblocking = enabled;
 }
