@@ -165,6 +165,106 @@ static bool core_path_contains(const char *needle)
 	return g_cfg.core && needle && strstr(g_cfg.core, needle) != NULL;
 }
 
+static bool ppsspp_serial_prefix_match(const char *s)
+{
+	static const char *prefixes[] = {
+		"UCUS", "UCES", "UCJS",
+		"ULUS", "ULES", "ULJS", "ULJM",
+		"NPUH", "NPUG", "NPUZ", "NPJH", "NPJG", "NPJJ", "NPEG",
+	};
+	size_t i = 0;
+
+	if (!s)
+		return false;
+
+	for (i = 0; i < (sizeof(prefixes) / sizeof(prefixes[0])); i++) {
+		if (strncmp(s, prefixes[i], 4) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+static bool ppsspp_is_serial_candidate(const char *s)
+{
+	size_t i = 0;
+
+	if (!s)
+		return false;
+	if (!ppsspp_serial_prefix_match(s))
+		return false;
+
+	for (i = 0; i < 4; i++) {
+		if (s[i] < 'A' || s[i] > 'Z')
+			return false;
+	}
+
+	for (i = 4; i < 9; i++) {
+		if (s[i] < '0' || s[i] > '9')
+			return false;
+	}
+
+	return true;
+}
+
+static bool ppsspp_serial_exists(char serials[][10], size_t count, const char *candidate)
+{
+	size_t i = 0;
+
+	for (i = 0; i < count; i++) {
+		if (strncmp(serials[i], candidate, 9) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+static size_t ppsspp_collect_serials_from_content(const char *content_path, char serials[][10], size_t max_serials)
+{
+	FILE *file = NULL;
+	unsigned char chunk[4096];
+	unsigned char window[9] = {0};
+	size_t count = 0;
+	size_t have = 0;
+	size_t read_bytes = 0;
+	size_t i = 0;
+
+	if (!content_path || !serials || max_serials == 0)
+		return 0;
+
+	file = fopen(content_path, "rb");
+	if (!file)
+		return 0;
+
+	while ((read_bytes = fread(chunk, 1, sizeof(chunk), file)) > 0 && count < max_serials) {
+		for (i = 0; i < read_bytes; i++) {
+			if (have < sizeof(window)) {
+				window[have++] = chunk[i];
+			} else {
+				memmove(window, window + 1, sizeof(window) - 1);
+				window[sizeof(window) - 1] = chunk[i];
+			}
+
+			if (have == sizeof(window)) {
+				char candidate[10];
+				memcpy(candidate, window, 9);
+				candidate[9] = '\0';
+
+				if (ppsspp_is_serial_candidate(candidate) &&
+				    !ppsspp_serial_exists(serials, count, candidate)) {
+					snprintf(serials[count], 10, "%s", candidate);
+					count++;
+					if (count >= max_serials)
+						break;
+				}
+			}
+		}
+	}
+
+	fclose(file);
+	return count;
+}
+
 static bool ensure_directory_exists(const char *path)
 {
 	int rc = 0;
@@ -249,6 +349,74 @@ static void vfs_resolve_path(char *dst, size_t dst_size, const char *src)
 #endif
 
 	snprintf(dst, dst_size, "%s", normalized);
+}
+
+static bool vfs_is_content_image_path(const char *path)
+{
+	const char *ext = NULL;
+
+	if (!path)
+		return false;
+
+	ext = strrchr(path, '.');
+	if (!ext)
+		return false;
+
+#if defined(_WIN32)
+	return _stricmp(ext, ".iso") == 0 ||
+		_stricmp(ext, ".cso") == 0 ||
+		_stricmp(ext, ".chd") == 0 ||
+		_stricmp(ext, ".pbp") == 0 ||
+		_stricmp(ext, ".elf") == 0 ||
+		_stricmp(ext, ".prx") == 0;
+#else
+	return strcasecmp(ext, ".iso") == 0 ||
+		strcasecmp(ext, ".cso") == 0 ||
+		strcasecmp(ext, ".chd") == 0 ||
+		strcasecmp(ext, ".pbp") == 0 ||
+		strcasecmp(ext, ".elf") == 0 ||
+		strcasecmp(ext, ".prx") == 0;
+#endif
+}
+
+static bool vfs_get_file_size_by_path(const char *path, int64_t *size_out, bool *is_dir_out)
+{
+	char native_path[VFS_PATH_MAX];
+
+	if (!path)
+		return false;
+
+	vfs_resolve_path(native_path, sizeof(native_path), path);
+
+#if defined(_WIN32)
+	{
+		WIN32_FILE_ATTRIBUTE_DATA data;
+		LARGE_INTEGER file_size;
+
+		if (!GetFileAttributesExA(native_path, GetFileExInfoStandard, &data))
+			return false;
+
+		file_size.HighPart = (LONG)data.nFileSizeHigh;
+		file_size.LowPart = data.nFileSizeLow;
+
+		if (size_out)
+			*size_out = file_size.QuadPart;
+		if (is_dir_out)
+			*is_dir_out = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+		return true;
+	}
+#else
+	{
+		struct stat st;
+		if (stat(native_path, &st) != 0)
+			return false;
+		if (size_out)
+			*size_out = (int64_t)st.st_size;
+		if (is_dir_out)
+			*is_dir_out = S_ISDIR(st.st_mode);
+		return true;
+	}
+#endif
 }
 
 static bool vfs_is_write_mode(unsigned mode)
@@ -378,6 +546,10 @@ static struct retro_vfs_file_handle *retro_vfs_file_open_impl(const char *path, 
 	snprintf(stream->path, sizeof(stream->path), "%s", native_path);
 	stream->fp = fopen(native_path, fmode);
 
+	if (core_path_contains("ppsspp") && vfs_is_content_image_path(native_path))
+		log_printf("core", "VFS open path='%s' mode=0x%x hints=0x%x fmode='%s'",
+			native_path, mode, hints, fmode);
+
 	if (!stream->fp && vfs_is_write_mode(mode)) {
 		char parent[VFS_PATH_MAX];
 		if (vfs_extract_parent_path(native_path, parent, sizeof(parent)))
@@ -415,6 +587,13 @@ static int64_t retro_vfs_file_size_impl(struct retro_vfs_file_handle *stream)
 	if (!stream || !stream->fp)
 		return -1;
 
+	if (vfs_get_file_size_by_path(stream->path, &size, NULL)) {
+		if (core_path_contains("ppsspp") && vfs_is_content_image_path(stream->path))
+			log_printf("core", "VFS size(path) path='%s' -> %lld",
+				stream->path, (long long)size);
+		return size;
+	}
+
 	current = vfs_ftell(stream->fp);
 	if (current < 0)
 		return -1;
@@ -428,6 +607,10 @@ static int64_t retro_vfs_file_size_impl(struct retro_vfs_file_handle *stream)
 
 	if (vfs_fseek(stream->fp, current, SEEK_SET) != 0)
 		return -1;
+
+	if (core_path_contains("ppsspp") && vfs_is_content_image_path(stream->path))
+		log_printf("core", "VFS size(stream) path='%s' -> %lld",
+			stream->path, (long long)size);
 
 	return size;
 }
@@ -523,41 +706,23 @@ static int retro_vfs_file_rename_impl(const char *old_path, const char *new_path
 
 static int retro_vfs_stat_impl(const char *path, int32_t *size)
 {
-	char native_path[VFS_PATH_MAX];
+	int64_t file_size = 0;
+	bool is_dir = false;
 
 	if (!path)
 		return 0;
 
-	vfs_resolve_path(native_path, sizeof(native_path), path);
+	if (!vfs_get_file_size_by_path(path, &file_size, &is_dir))
+		return 0;
 
-#if defined(_WIN32)
-	{
-		WIN32_FILE_ATTRIBUTE_DATA data;
-		if (!GetFileAttributesExA(native_path, GetFileExInfoStandard, &data))
-			return 0;
+	if (size)
+		*size = (int32_t)file_size;
 
-		if (size) {
-			LARGE_INTEGER file_size;
-			file_size.HighPart = (LONG)data.nFileSizeHigh;
-			file_size.LowPart = data.nFileSizeLow;
-			*size = (int32_t)file_size.QuadPart;
-		}
+	if (core_path_contains("ppsspp") && vfs_is_content_image_path(path))
+		log_printf("core", "VFS stat path='%s' -> size=%lld is_dir=%d",
+			path, (long long)file_size, is_dir ? 1 : 0);
 
-		return RETRO_VFS_STAT_IS_VALID |
-			((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? RETRO_VFS_STAT_IS_DIRECTORY : 0);
-	}
-#else
-	{
-		struct stat st;
-		if (stat(native_path, &st) != 0)
-			return 0;
-
-		if (size)
-			*size = (int32_t)st.st_size;
-
-		return RETRO_VFS_STAT_IS_VALID | (S_ISDIR(st.st_mode) ? RETRO_VFS_STAT_IS_DIRECTORY : 0);
-	}
-#endif
+	return RETRO_VFS_STAT_IS_VALID | (is_dir ? RETRO_VFS_STAT_IS_DIRECTORY : 0);
 }
 
 static int retro_vfs_mkdir_impl(const char *dir)
@@ -698,16 +863,16 @@ static int retro_vfs_closedir_impl(struct retro_vfs_dir_handle *dirstream)
 static bool prepare_ppsspp_save_root(void)
 {
 	static const char *paths[] = {
-		"./save",
-		"./save/PSP",
-		"./save/PSP/SAVEDATA",
-		"./save/PSP/SYSTEM",
-		"./save/PSP/SYSTEM/CACHE",
-		"./save/PSP/Cheats",
-		"./save/PSP/GAME",
-		"./save/PSP/TEXTURES",
-		"./save/PSP/PPSSPP_STATE",
-		"./save/PSP/flash0",
+		"./memstick",
+		"./memstick/PSP",
+		"./memstick/PSP/SAVEDATA",
+		"./memstick/PSP/SYSTEM",
+		"./memstick/PSP/SYSTEM/CACHE",
+		"./memstick/PSP/Cheats",
+		"./memstick/PSP/GAME",
+		"./memstick/PSP/TEXTURES",
+		"./memstick/PSP/PPSSPP_STATE",
+		"./memstick/flash0",
 	};
 	bool ok = true;
 	size_t i = 0;
@@ -720,6 +885,42 @@ static bool prepare_ppsspp_save_root(void)
 	return ok;
 }
 
+static void prepare_ppsspp_game_save_dirs(const char *content_path)
+{
+	char serials[8][10] = {{0}};
+	size_t count = 0;
+	size_t i = 0;
+	static const char *suffixes[] = {
+		"",
+		"Profile",
+	};
+
+	if (!core_path_contains("ppsspp"))
+		return;
+
+	if (!prepare_ppsspp_save_root())
+		return;
+
+	count = ppsspp_collect_serials_from_content(content_path, serials, 8);
+	if (count == 0) {
+		log_printf("core", "PPSSPP save dirs: no serial found in '%s'",
+			content_path ? content_path : "(null)");
+		return;
+	}
+
+	for (i = 0; i < count; i++) {
+		size_t j = 0;
+		log_printf("core", "PPSSPP content serial detected: %s", serials[i]);
+		for (j = 0; j < (sizeof(suffixes) / sizeof(suffixes[0])); j++) {
+			char save_dir[VFS_PATH_MAX];
+			snprintf(save_dir, sizeof(save_dir), "./memstick/PSP/SAVEDATA/%s%s",
+				serials[i], suffixes[j]);
+			if (ensure_directory_exists(save_dir))
+				log_printf("core", "PPSSPP save dir prepared: %s", save_dir);
+		}
+	}
+}
+
 static const char *core_system_directory(void)
 {
 	return ".";
@@ -730,12 +931,12 @@ static const char *core_save_directory(void)
 	if (core_path_contains("ppsspp")) {
 		if (!ppsspp_save_root_prepared) {
 			bool created = prepare_ppsspp_save_root();
-			log_printf("core", "PPSSPP save root '%s' prepared=%s (RetroArch layout)",
-				"./save",
+			log_printf("core", "PPSSPP save root '%s' prepared=%s (memstick layout)",
+				"./memstick",
 				created ? "yes" : "no");
 			ppsspp_save_root_prepared = true;
 		}
-		return "./save";
+		return "./memstick";
 	}
 
 	return ".";
@@ -1198,6 +1399,7 @@ void core_load_game(const char *filename)
 		content_path = resolved_filename;
 
 	info.path = content_path;
+	prepare_ppsspp_game_save_dirs(content_path);
 
 	core.retro_get_system_info(&si);
 	log_printf("core",
@@ -1234,7 +1436,7 @@ void core_load_game(const char *filename)
 		fclose(file);
 		file = NULL;
 		info.data = NULL;
-		info.size = 0;
+		info.size = core_path_contains("ppsspp") ? 0 : content_size;
 	}
 
 	log_printf("core",
