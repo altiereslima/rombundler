@@ -134,6 +134,3 @@ Not yet compatible:
 
  * md_libretro (input issues)
  * sameboy_libretro (audio issues)
- * mupen64plus_next_libretro (various issues)
- * parallel_n64_libretro (various issues)
- * ppsspp_libretro (GL issues)

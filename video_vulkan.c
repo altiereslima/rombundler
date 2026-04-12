@@ -1404,7 +1404,9 @@ void video_vulkan_set_fast_forward(bool enabled)
 
 	g_vk.fast_forward = enabled;
 	log_printf("video", "Vulkan fast-forward=%d", enabled ? 1 : 0);
-	video_vulkan_mark_swapchain_dirty();
+
+	/* Evita recriar a swapchain a cada press/release do fast-forward.
+	 * Isso estava derrubando cores sensiveis no caminho Vulkan. */
 }
 
 void video_vulkan_begin_frame(void)

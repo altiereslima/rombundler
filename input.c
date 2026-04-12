@@ -10,6 +10,7 @@
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 #include "input.h"
 #include "config.h"
@@ -169,6 +170,30 @@ struct keymap kbd_binds[] = {
 static int16_t state[MAX_PLAYERS][RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
 static int16_t analog_state[MAX_PLAYERS][2][2] = { 0 };
 static retro_keyboard_event_t key_event = NULL;
+static int active_gamepads[MAX_PLAYERS] = { -1, -1, -1, -1, -1 };
+
+static void input_refresh_active_gamepads(void)
+{
+	int count = 0;
+
+	for (int port = 0; port < MAX_PLAYERS; port++)
+		active_gamepads[port] = -1;
+
+	for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST && count < MAX_PLAYERS; jid++) {
+		if (!glfwJoystickPresent(jid))
+			continue;
+		if (!glfwJoystickIsGamepad(jid))
+			continue;
+		active_gamepads[count++] = jid;
+	}
+}
+
+static int input_gamepad_jid_for_port(int port)
+{
+	if (port < 0 || port >= MAX_PLAYERS)
+		return -1;
+	return active_gamepads[port];
+}
 static bool ff_active = false;
 static bool ff_active_prev = false;
 static bool mouse_capture_active = false;
@@ -207,12 +232,13 @@ static bool ff_gamepad_button_pressed(void)
 		return false;
 
 	for (int port = 0; port < MAX_PLAYERS; port++) {
+		int jid = input_gamepad_jid_for_port(port);
 		GLFWgamepadstate pad;
 		unsigned mapped_btn = 0;
 
-		if (!glfwJoystickIsGamepad(port))
+		if (jid < 0)
 			continue;
-		if (!glfwGetGamepadState(port, &pad))
+		if (!glfwGetGamepadState(jid, &pad))
 			continue;
 
 		switch (g_cfg.ff_button) {
@@ -280,8 +306,11 @@ static void update_mouse_capture(void)
 
 void input_poll(void) {
 	int i;
+	int port;
 	bool alt_enter_pressed;
 	bool menu_supported = video_menu_supported();
+
+	input_refresh_active_gamepads();
 
 	/* ─── Atalhos globais (funcionam sempre, com ou sem menu) ─── */
 
@@ -308,10 +337,11 @@ void input_poll(void) {
 	/* BACK+START no gamepad = abrir/fechar menu */
 	for (int port = 0; port < MAX_PLAYERS; port++) {
 		bool combo_pressed = false;
+		int jid = input_gamepad_jid_for_port(port);
 		GLFWgamepadstate pad;
 
-		if (glfwJoystickIsGamepad(port) &&
-		    glfwGetGamepadState(port, &pad)) {
+		if (jid >= 0 &&
+		    glfwGetGamepadState(jid, &pad)) {
 			combo_pressed =
 				pad.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS &&
 				pad.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS;
@@ -347,6 +377,11 @@ void input_poll(void) {
 
 	/* ─── Entrada normal do jogo ─── */
 
+	for (port = 0; port < MAX_PLAYERS; port++) {
+		memset(state[port], 0, sizeof(state[port]));
+		memset(analog_state[port], 0, sizeof(analog_state[port]));
+	}
+
 	if (key_event) {
 		for (i = 0; kbd_binds[i].k || kbd_binds[i].rk; ++i) {
 			bool pressed = glfwGetKey(window, kbd_binds[i].k) == GLFW_PRESS;
@@ -366,13 +401,14 @@ void input_poll(void) {
 	}
 
 	/* Gamepads — usa o sistema de remap */
-	int port;
 	for (port = 0; port < MAX_PLAYERS; port++) {
-		if (!glfwJoystickIsGamepad(port))
+		int jid = input_gamepad_jid_for_port(port);
+
+		if (jid < 0)
 			continue;
 
 		GLFWgamepadstate pad;
-		if (glfwGetGamepadState(port, &pad)) {
+		if (glfwGetGamepadState(jid, &pad)) {
 			/* Botões de ação via remap (14 primeiros botões: A,B,X,Y,UP,DOWN,LEFT,RIGHT,START,SELECT,L,R,L3,R3) */
 			for (i = 0; i <= RETRO_DEVICE_ID_JOYPAD_R3; i++) {
 				unsigned mapped_btn = remap_get(port, i);
@@ -416,11 +452,27 @@ int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 	if (port >= MAX_PLAYERS)
 		return 0;
 
-	if (device == RETRO_DEVICE_JOYPAD)
-		return state[port][id];
+	if (device == RETRO_DEVICE_JOYPAD) {
+		if (id == RETRO_DEVICE_ID_JOYPAD_MASK) {
+			int16_t mask = 0;
+			for (unsigned i = 0; i <= RETRO_DEVICE_ID_JOYPAD_R3; i++) {
+				if (state[port][i])
+					mask |= (int16_t)(1u << i);
+			}
+			return mask;
+		}
 
-	if (device == RETRO_DEVICE_ANALOG)
+		if (id > RETRO_DEVICE_ID_JOYPAD_R3)
+			return 0;
+		return state[port][id];
+	}
+
+	if (device == RETRO_DEVICE_ANALOG) {
+		if (index > RETRO_DEVICE_INDEX_ANALOG_RIGHT ||
+		    id > RETRO_DEVICE_ID_ANALOG_Y)
+			return 0;
 		return analog_state[port][index][id];
+	}
 
 	if (device == RETRO_DEVICE_MOUSE && window != NULL) {
 		mouse_requested_at = glfwGetTime();

@@ -211,6 +211,46 @@ static void vfs_normalize_path(char *dst, size_t dst_size, const char *src)
 #endif
 }
 
+static void vfs_resolve_path(char *dst, size_t dst_size, const char *src)
+{
+	char normalized[VFS_PATH_MAX];
+
+	if (!dst || !dst_size) {
+		return;
+	}
+
+	dst[0] = '\0';
+	vfs_normalize_path(normalized, sizeof(normalized), src);
+
+	if (!normalized[0]) {
+		return;
+	}
+
+#if defined(_WIN32)
+	{
+		DWORD rc = GetFullPathNameA(normalized, (DWORD)dst_size, dst, NULL);
+		if (rc > 0 && rc < dst_size)
+			return;
+	}
+#else
+	if (normalized[0] == '/')
+	{
+		snprintf(dst, dst_size, "%s", normalized);
+		return;
+	}
+	else
+	{
+		char cwd[VFS_PATH_MAX];
+		if (getcwd(cwd, sizeof(cwd))) {
+			snprintf(dst, dst_size, "%s/%s", cwd, normalized);
+			return;
+		}
+	}
+#endif
+
+	snprintf(dst, dst_size, "%s", normalized);
+}
+
 static bool vfs_is_write_mode(unsigned mode)
 {
 	return (mode & RETRO_VFS_FILE_ACCESS_WRITE) != 0;
@@ -329,13 +369,13 @@ static struct retro_vfs_file_handle *retro_vfs_file_open_impl(const char *path, 
 		fmode = "rb";
 	}
 
-	vfs_normalize_path(native_path, sizeof(native_path), path);
+	vfs_resolve_path(native_path, sizeof(native_path), path);
 
 	stream = (struct retro_vfs_file_handle *)calloc(1, sizeof(*stream));
 	if (!stream)
 		return NULL;
 
-	snprintf(stream->path, sizeof(stream->path), "%s", path);
+	snprintf(stream->path, sizeof(stream->path), "%s", native_path);
 	stream->fp = fopen(native_path, fmode);
 
 	if (!stream->fp && vfs_is_write_mode(mode)) {
@@ -464,7 +504,7 @@ static int retro_vfs_file_remove_impl(const char *path)
 	if (!path)
 		return -1;
 
-	vfs_normalize_path(native_path, sizeof(native_path), path);
+	vfs_resolve_path(native_path, sizeof(native_path), path);
 	return remove(native_path) == 0 ? 0 : -1;
 }
 
@@ -476,8 +516,8 @@ static int retro_vfs_file_rename_impl(const char *old_path, const char *new_path
 	if (!old_path || !new_path)
 		return -1;
 
-	vfs_normalize_path(old_native, sizeof(old_native), old_path);
-	vfs_normalize_path(new_native, sizeof(new_native), new_path);
+	vfs_resolve_path(old_native, sizeof(old_native), old_path);
+	vfs_resolve_path(new_native, sizeof(new_native), new_path);
 	return rename(old_native, new_native) == 0 ? 0 : -1;
 }
 
@@ -488,7 +528,7 @@ static int retro_vfs_stat_impl(const char *path, int32_t *size)
 	if (!path)
 		return 0;
 
-	vfs_normalize_path(native_path, sizeof(native_path), path);
+	vfs_resolve_path(native_path, sizeof(native_path), path);
 
 #if defined(_WIN32)
 	{
@@ -537,7 +577,7 @@ static struct retro_vfs_dir_handle *retro_vfs_opendir_impl(const char *dir, bool
 		return NULL;
 
 	dirstream->include_hidden = include_hidden;
-	snprintf(dirstream->dirpath, sizeof(dirstream->dirpath), "%s", dir);
+	vfs_resolve_path(dirstream->dirpath, sizeof(dirstream->dirpath), dir);
 
 #if defined(_WIN32)
 	{
@@ -545,7 +585,7 @@ static struct retro_vfs_dir_handle *retro_vfs_opendir_impl(const char *dir, bool
 		char pattern[VFS_PATH_MAX];
 		size_t len = 0;
 
-		vfs_normalize_path(native_path, sizeof(native_path), dir);
+		snprintf(native_path, sizeof(native_path), "%s", dirstream->dirpath);
 		snprintf(pattern, sizeof(pattern), "%s", native_path);
 		len = strlen(pattern);
 		if (len > 0 && pattern[len - 1] != '\\' && pattern[len - 1] != '/')
@@ -563,7 +603,7 @@ static struct retro_vfs_dir_handle *retro_vfs_opendir_impl(const char *dir, bool
 #else
 	{
 		char native_path[VFS_PATH_MAX];
-		vfs_normalize_path(native_path, sizeof(native_path), dir);
+		snprintf(native_path, sizeof(native_path), "%s", dirstream->dirpath);
 		dirstream->dir = opendir(native_path);
 		if (!dirstream->dir) {
 			free(dirstream);
@@ -615,9 +655,7 @@ static bool retro_vfs_readdir_impl(struct retro_vfs_dir_handle *dirstream)
 		{
 			char full_path[VFS_PATH_MAX];
 			struct stat st;
-			char native_dir[VFS_PATH_MAX];
-			vfs_normalize_path(native_dir, sizeof(native_dir), dirstream->dirpath);
-			snprintf(full_path, sizeof(full_path), "%s/%s", native_dir, entry->d_name);
+			snprintf(full_path, sizeof(full_path), "%s/%s", dirstream->dirpath, entry->d_name);
 			dirstream->is_dir = stat(full_path, &st) == 0 && S_ISDIR(st.st_mode);
 		}
 
@@ -1033,6 +1071,11 @@ static bool core_environment(unsigned cmd, void *data)
 			if (!info)
 				return false;
 
+			if (core_path_contains("ppsspp")) {
+				log_printf("core", "GET_VFS_INTERFACE skipped for PPSSPP (using native file access)");
+				return false;
+			}
+
 			if (info->required_interface_version > 3) {
 				log_printf("core", "GET_VFS_INTERFACE requested v%u, unsupported",
 					info->required_interface_version);
@@ -1144,15 +1187,17 @@ void core_load_game(const char *filename)
 {
 	struct retro_system_av_info av = {0};
 	struct retro_system_info si = {0};
-	struct retro_game_info info = { filename, 0 };
-	FILE *file = fopen(filename, "rb");
+	char resolved_filename[VFS_PATH_MAX];
+	const char *content_path = filename;
+	struct retro_game_info info = { 0 };
+	FILE *file = NULL;
+	size_t content_size = 0;
 
-	if (!file)
-		die("The core could not open the file.");
+	vfs_resolve_path(resolved_filename, sizeof(resolved_filename), filename);
+	if (resolved_filename[0])
+		content_path = resolved_filename;
 
-	fseek(file, 0, SEEK_END);
-	info.size = ftell(file);
-	rewind(file);
+	info.path = content_path;
 
 	core.retro_get_system_info(&si);
 	log_printf("core",
@@ -1164,13 +1209,39 @@ void core_load_game(const char *filename)
 		si.valid_extensions ? si.valid_extensions : "(null)");
 
 	if (!si.need_fullpath) {
+		file = fopen(content_path, "rb");
+
+		if (!file)
+			die("The core could not open the file.");
+
+		fseek(file, 0, SEEK_END);
+		content_size = (size_t)ftell(file);
+		rewind(file);
+
+		info.size = content_size;
 		info.data = malloc(info.size);
 
 		if (!info.data || !fread((void*)info.data, info.size, 1, file))
 			die("The core could not read the file.");
+		fclose(file);
+		file = NULL;
+	} else {
+		file = fopen(content_path, "rb");
+		if (!file)
+			die("The core could not open the file.");
+		fseek(file, 0, SEEK_END);
+		content_size = (size_t)ftell(file);
+		fclose(file);
+		file = NULL;
+		info.data = NULL;
+		info.size = 0;
 	}
 
-	log_printf("core", "loading game: path='%s' size=%zu", filename ? filename : "(null)", info.size);
+	log_printf("core",
+		"loading game: path='%s' buffer_size=%zu file_size=%zu",
+		content_path ? content_path : "(null)",
+		info.size,
+		content_size);
 	if (!core.retro_load_game(&info))
 		die("The core failed to load the content.");
 
