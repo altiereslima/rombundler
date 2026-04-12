@@ -105,7 +105,6 @@ We recommand using the linear filter with the CRT and LCD shaders.
 
  * Provide an OSX .app
  * Static linking for Linux
- * Switch full screen / windowed
  * Multitap option
 
 # Known working cores
