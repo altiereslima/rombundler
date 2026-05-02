@@ -22,4 +22,14 @@ bool   audio_get_mute(void);
  * instead of waiting for buffers (used during fast forward). */
 void   audio_set_nonblocking(bool enabled);
 
+/* Pull audio from cores using SET_AUDIO_CALLBACK (MAME, etc).
+ * Called from main loop to refill OpenAL buffers. */
+void   audio_callback_pull(void);
+
+/* Dedicated audio thread for pull-model cores (MAME etc).
+ * Start after audio_init() + set_state(true).
+ * Stop before core_unload(). */
+void   audio_start_thread(void);
+void   audio_stop_thread(void);
+
 #endif /* AUDIO_H */

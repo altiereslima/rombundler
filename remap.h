@@ -28,4 +28,11 @@ void remap_reset_defaults(int port);
 /* Restaura o mapeamento padrão para todas as portas */
 void remap_reset_all_defaults(void);
 
+/* Retorna o RETRO_DEVICE_ID_JOYPAD_* que o gatilho L2/R2 aciona (padrão: L2/R2) */
+unsigned remap_get_trigger_l2_target(int port);
+unsigned remap_get_trigger_r2_target(int port);
+
+/* Modo analógico → D-pad por porta: -1=herda global, 0=off, 1=esq, 2=dir, 3=ambos */
+int remap_get_analog_dpad_mode(int port);
+
 #endif /* REMAP_H */

@@ -13,6 +13,8 @@
 #include "shaders.h"
 #include "aspect.h"
 #include "video_vulkan.h"
+#include "core.h"
+#include "font.h"
 
 #ifdef __APPLE__
 #define glGenVertexArrays glGenVertexArraysAPPLE
@@ -1104,6 +1106,20 @@ void video_render()
 
 	glUseProgram(0);
 	log_gl_errors("video_render");
+
+	/* OSD message from core (e.g. PUAE virtual keyboard status) */
+	{
+		const char *osd = core_message_text();
+		if (osd && osd[0]) {
+			int fbw = 0, fbh = 0;
+			glfwGetFramebufferSize(window, &fbw, &fbh);
+			float osd_scale = (float)fbh / 480.0f * 1.2f;
+			if (osd_scale < 0.8f) osd_scale = 0.8f;
+			float x = 10.0f;
+			float y = (float)fbh - font_text_height(osd_scale) - 8.0f;
+			font_render_text(x, y, osd, FONT_COLOR_YELLOW, osd_scale, fbw, fbh);
+		}
+	}
 }
 
 bool video_is_fullscreen(void)

@@ -1,8 +1,9 @@
 /*
  * aspect.h — Sistema de proporção de tela por jogo.
  *
- * Modos: Core Default, Stretch, 4:3, 16:9, Custom.
- * Modo Custom permite ajuste de posição/tamanho via controle.
+ * Modos: Core Default, Stretch, 4:3, 16:9, Custom, Zoom.
+ * Modo Zoom: escala uniforme via RT/LT, move via D-Pad.
+ * Modo Custom: ajuste independente de largura/altura.
  * Configuração salva por ROM em subpasta do executável.
  */
 
@@ -14,7 +15,8 @@ typedef enum {
 	ASPECT_STRETCH, /* Esticar para caber na janela */
 	ASPECT_4_3,     /* Forçar 4:3 */
 	ASPECT_16_9,    /* Forçar 16:9 */
-	ASPECT_CUSTOM,  /* Personalizado (editável) */
+	ASPECT_CUSTOM,  /* Personalizado (W/H independente) */
+	ASPECT_ZOOM,    /* Zoom uniforme com RT/LT */
 	ASPECT_COUNT
 } aspect_mode_t;
 
@@ -23,10 +25,11 @@ typedef struct {
 	int x, y, w, h;
 } aspect_viewport_t;
 
-/* Offsets customizados (persistidos por jogo) */
+/* Valores customizados (persistidos por jogo) */
 typedef struct {
 	int off_x, off_y;   /* Deslocamento em pixels */
-	int adj_w, adj_h;   /* Ajuste de largura/altura */
+	int adj_w, adj_h;   /* Ajuste de largura/altura (modo Custom) */
+	int zoom_pct;       /* Zoom percentual (modo Zoom, 100=1x) */
 } aspect_custom_t;
 
 /* Inicializa o sistema com o nome da ROM (para salvar/carregar por jogo) */
@@ -56,5 +59,9 @@ aspect_viewport_t aspect_calc(int win_w, int win_h, int core_w, int core_h, floa
 /* Custom adjustments */
 aspect_custom_t *aspect_get_custom(void);
 void aspect_custom_reset(void);
+
+/* Zoom uniforme */
+int aspect_zoom_pct(void);
+void aspect_zoom_delta(int delta);
 
 #endif

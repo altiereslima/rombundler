@@ -5,3 +5,6 @@ void *core_get_memory_data(unsigned id);
 void core_run();
 float core_get_nominal_fps(void);
 void core_unload();
+void core_message_update(void);
+const char *core_message_text(void);
+int core_message_frames(void);

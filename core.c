@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <errno.h>
 #include <string.h>
+#include <wchar.h>
 #include <sys/time.h>
 #include "lang.h"
 
@@ -62,15 +63,63 @@ static struct retro_frame_time_callback runloop_frame_time;
 static retro_usec_t runloop_frame_time_last = 0;
 static unsigned long long core_run_count = 0;
 static float core_nominal_fps = 60.0f;
+
+/* OSD message state */
+static char core_message_buf[512] = {0};
+static int core_message_remaining = 0;
+
+/* Audio callback for MAME and other pull-model cores */
+struct retro_audio_callback audio_cb = {0};
+bool audio_cb_active = false;
 static bool ppsspp_save_root_prepared = false;
 static const struct retro_input_descriptor *input_descriptors = NULL;
 static const struct retro_controller_info *controller_infos = NULL;
 static const struct retro_subsystem_info *subsystem_infos = NULL;
+static struct retro_disk_control_callback disk_control_cb = {0};
+static struct retro_disk_control_ext_callback disk_control_ext_cb = {0};
+static struct retro_fastforwarding_override fastforward_override = {0};
 static struct retro_memory_map memory_map = {0};
 static struct retro_core_options_update_display_callback options_display_cb = {0};
 extern config g_cfg;
 
 #define VFS_PATH_MAX 4096
+
+static char core_system_dir[VFS_PATH_MAX] = {0};
+static char core_save_dir[VFS_PATH_MAX] = {0};
+static char core_memstick_dir[VFS_PATH_MAX] = {0};
+static bool core_dirs_prepared = false;
+
+static char qemu_cmd_line_sanitized_path[VFS_PATH_MAX] = {0};
+
+static const char *message_target_name(enum retro_message_target target)
+{
+	switch (target) {
+		case RETRO_MESSAGE_TARGET_ALL:
+			return "all";
+		case RETRO_MESSAGE_TARGET_OSD:
+			return "osd";
+		case RETRO_MESSAGE_TARGET_LOG:
+			return "log";
+		default:
+			return "unknown";
+	}
+}
+
+static const char *message_type_name(enum retro_message_type type)
+{
+	switch (type) {
+		case RETRO_MESSAGE_TYPE_NOTIFICATION:
+			return "notification";
+		case RETRO_MESSAGE_TYPE_NOTIFICATION_ALT:
+			return "notification_alt";
+		case RETRO_MESSAGE_TYPE_STATUS:
+			return "status";
+		case RETRO_MESSAGE_TYPE_PROGRESS:
+			return "progress";
+		default:
+			return "unknown";
+	}
+}
 
 struct retro_vfs_file_handle {
 	FILE *fp;
@@ -84,7 +133,7 @@ struct retro_vfs_dir_handle {
 	bool is_dir;
 #if defined(_WIN32)
 	HANDLE handle;
-	WIN32_FIND_DATAA data;
+	WIN32_FIND_DATAW data;
 	bool first;
 #else
 	DIR *dir;
@@ -97,6 +146,91 @@ struct retro_vfs_dir_handle {
 #else
 #define vfs_fseek fseeko
 #define vfs_ftell ftello
+#endif
+
+#if defined(_WIN32)
+static bool vfs_utf8_to_wide(const char *src, wchar_t *dst, size_t dst_count)
+{
+	int needed = 0;
+
+	if (!src || !dst || dst_count == 0)
+		return false;
+
+	needed = MultiByteToWideChar(CP_UTF8, 0, src, -1, dst, (int)dst_count);
+	if (needed > 0)
+		return true;
+
+	needed = MultiByteToWideChar(CP_ACP, 0, src, -1, dst, (int)dst_count);
+	return needed > 0;
+}
+
+static bool vfs_wide_to_utf8(const wchar_t *src, char *dst, size_t dst_size)
+{
+	int needed = 0;
+
+	if (!src || !dst || dst_size == 0)
+		return false;
+
+	needed = WideCharToMultiByte(CP_UTF8, 0, src, -1, dst, (int)dst_size, NULL, NULL);
+	return needed > 0;
+}
+
+static FILE *vfs_fopen(const char *path, const char *mode)
+{
+	wchar_t wide_path[VFS_PATH_MAX];
+	wchar_t wide_mode[16];
+
+	if (!path || !mode)
+		return NULL;
+
+	if (!vfs_utf8_to_wide(path, wide_path, sizeof(wide_path) / sizeof(wide_path[0])))
+		return NULL;
+	if (!vfs_utf8_to_wide(mode, wide_mode, sizeof(wide_mode) / sizeof(wide_mode[0])))
+		return NULL;
+
+	return _wfopen(wide_path, wide_mode);
+}
+
+static int vfs_remove_utf8(const char *path)
+{
+	wchar_t wide_path[VFS_PATH_MAX];
+
+	if (!path)
+		return -1;
+	if (!vfs_utf8_to_wide(path, wide_path, sizeof(wide_path) / sizeof(wide_path[0])))
+		return -1;
+
+	return _wremove(wide_path);
+}
+
+static int vfs_rename_utf8(const char *old_path, const char *new_path)
+{
+	wchar_t wide_old[VFS_PATH_MAX];
+	wchar_t wide_new[VFS_PATH_MAX];
+
+	if (!old_path || !new_path)
+		return -1;
+	if (!vfs_utf8_to_wide(old_path, wide_old, sizeof(wide_old) / sizeof(wide_old[0])) ||
+		!vfs_utf8_to_wide(new_path, wide_new, sizeof(wide_new) / sizeof(wide_new[0])))
+		return -1;
+
+	return _wrename(wide_old, wide_new);
+}
+#else
+static FILE *vfs_fopen(const char *path, const char *mode)
+{
+	return fopen(path, mode);
+}
+
+static int vfs_remove_utf8(const char *path)
+{
+	return remove(path);
+}
+
+static int vfs_rename_utf8(const char *old_path, const char *new_path)
+{
+	return rename(old_path, new_path);
+}
 #endif
 
 static unsigned count_input_descriptors(const struct retro_input_descriptor *desc)
@@ -147,22 +281,142 @@ static bool should_log_variable_lookup(const char *key)
 	return strcmp(key, "mupen64plus-rdp-plugin") == 0 ||
 		strcmp(key, "mupen64plus-rsp-plugin") == 0 ||
 		strcmp(key, "mupen64plus-ThreadedRenderer") == 0 ||
-		strcmp(key, "mupen64plus-EnableFBEmulation") == 0;
+		strcmp(key, "mupen64plus-EnableFBEmulation") == 0 ||
+		strcmp(key, "puae_use_whdload") == 0 ||
+		strcmp(key, "puae_use_whdload_prefs") == 0 ||
+		strcmp(key, "puae_use_boot_hd") == 0 ||
+		strcmp(key, "puae_model_hd") == 0;
 }
 
 static bool core_path_contains(const char *needle);
+static bool path_has_suffix_ci(const char *path, const char *suffix);
+static const char *prepare_qemu_cmd_line_path(const char *content_path);
 
 static bool core_prefers_vulkan_hw(void)
 {
-	if (core_path_contains("mupen64plus_next") || core_path_contains("mupen64plus"))
-		return false;
-
 	return g_cfg.core != NULL;
 }
 
 static bool core_path_contains(const char *needle)
 {
 	return g_cfg.core && needle && strstr(g_cfg.core, needle) != NULL;
+}
+
+static bool path_has_suffix_ci(const char *path, const char *suffix)
+{
+	size_t path_len = 0;
+	size_t suffix_len = 0;
+
+	if (!path || !suffix)
+		return false;
+
+	path_len = strlen(path);
+	suffix_len = strlen(suffix);
+	if (path_len < suffix_len)
+		return false;
+
+#if defined(_WIN32)
+	return _stricmp(path + path_len - suffix_len, suffix) == 0;
+#else
+	return strcasecmp(path + path_len - suffix_len, suffix) == 0;
+#endif
+}
+
+static const char *prepare_qemu_cmd_line_path(const char *content_path)
+{
+	FILE *src = NULL;
+	FILE *dst = NULL;
+	char *buffer = NULL;
+	long file_size = 0;
+	size_t read_size = 0;
+	size_t trimmed_size = 0;
+	const char *last_sep = NULL;
+	size_t dir_len = 0;
+	static const char *sanitized_name = "__rombundler_qemu_cmd_line.qemu_cmd_line";
+
+	qemu_cmd_line_sanitized_path[0] = '\0';
+
+	if (!content_path)
+		return content_path;
+	if (!core_path_contains("qemu"))
+		return content_path;
+	if (!path_has_suffix_ci(content_path, ".qemu_cmd_line"))
+		return content_path;
+
+	src = vfs_fopen(content_path, "rb");
+	if (!src)
+		return content_path;
+
+	if (fseek(src, 0, SEEK_END) != 0) {
+		fclose(src);
+		return content_path;
+	}
+
+	file_size = ftell(src);
+	if (file_size < 0) {
+		fclose(src);
+		return content_path;
+	}
+
+	rewind(src);
+	buffer = (char *)malloc((size_t)file_size + 1);
+	if (!buffer) {
+		fclose(src);
+		return content_path;
+	}
+
+	read_size = fread(buffer, 1, (size_t)file_size, src);
+	fclose(src);
+	src = NULL;
+
+	buffer[read_size] = '\0';
+	trimmed_size = read_size;
+	while (trimmed_size > 0) {
+		char c = buffer[trimmed_size - 1];
+		if (c != '\r' && c != '\n' && c != '\t' && c != ' ')
+			break;
+		trimmed_size--;
+	}
+
+	if (trimmed_size == read_size) {
+		free(buffer);
+		return content_path;
+	}
+
+	last_sep = strrchr(content_path, '\\');
+	if (!last_sep)
+		last_sep = strrchr(content_path, '/');
+	dir_len = last_sep ? (size_t)(last_sep - content_path + 1) : 0;
+
+	if (dir_len + strlen(sanitized_name) + 1 >= sizeof(qemu_cmd_line_sanitized_path)) {
+		free(buffer);
+		return content_path;
+	}
+
+	if (dir_len > 0)
+		memcpy(qemu_cmd_line_sanitized_path, content_path, dir_len);
+	strcpy(qemu_cmd_line_sanitized_path + dir_len, sanitized_name);
+
+	dst = vfs_fopen(qemu_cmd_line_sanitized_path, "wb");
+	if (!dst) {
+		qemu_cmd_line_sanitized_path[0] = '\0';
+		free(buffer);
+		return content_path;
+	}
+
+	if (trimmed_size > 0)
+		fwrite(buffer, 1, trimmed_size, dst);
+	fclose(dst);
+	free(buffer);
+
+	log_printf("core",
+		"sanitized qemu command file original='%s' sanitized='%s' size=%zu trimmed=%zu",
+		content_path,
+		qemu_cmd_line_sanitized_path,
+		read_size,
+		trimmed_size);
+
+	return qemu_cmd_line_sanitized_path;
 }
 
 static bool ppsspp_serial_prefix_match(const char *s)
@@ -232,7 +486,7 @@ static size_t ppsspp_collect_serials_from_content(const char *content_path, char
 	if (!content_path || !serials || max_serials == 0)
 		return 0;
 
-	file = fopen(content_path, "rb");
+	file = vfs_fopen(content_path, "rb");
 	if (!file)
 		return 0;
 
@@ -273,7 +527,13 @@ static bool ensure_directory_exists(const char *path)
 		return false;
 
 #if defined(_WIN32)
-	rc = _mkdir(path);
+	{
+		wchar_t wide_path[VFS_PATH_MAX];
+
+		if (!vfs_utf8_to_wide(path, wide_path, sizeof(wide_path) / sizeof(wide_path[0])))
+			return false;
+		rc = _wmkdir(wide_path);
+	}
 #else
 	rc = mkdir(path, 0755);
 #endif
@@ -328,9 +588,22 @@ static void vfs_resolve_path(char *dst, size_t dst_size, const char *src)
 
 #if defined(_WIN32)
 	{
-		DWORD rc = GetFullPathNameA(normalized, (DWORD)dst_size, dst, NULL);
-		if (rc > 0 && rc < dst_size)
-			return;
+		wchar_t wide_normalized[VFS_PATH_MAX];
+		wchar_t wide_resolved[VFS_PATH_MAX];
+		DWORD rc = 0;
+
+		if (vfs_utf8_to_wide(normalized,
+			wide_normalized,
+			sizeof(wide_normalized) / sizeof(wide_normalized[0]))) {
+			rc = GetFullPathNameW(wide_normalized,
+				(DWORD)(sizeof(wide_resolved) / sizeof(wide_resolved[0])),
+				wide_resolved,
+				NULL);
+			if (rc > 0 &&
+				rc < (sizeof(wide_resolved) / sizeof(wide_resolved[0])) &&
+				vfs_wide_to_utf8(wide_resolved, dst, dst_size))
+				return;
+		}
 	}
 #else
 	if (normalized[0] == '/')
@@ -390,10 +663,14 @@ static bool vfs_get_file_size_by_path(const char *path, int64_t *size_out, bool 
 
 #if defined(_WIN32)
 	{
+		wchar_t wide_path[VFS_PATH_MAX];
 		WIN32_FILE_ATTRIBUTE_DATA data;
 		LARGE_INTEGER file_size;
 
-		if (!GetFileAttributesExA(native_path, GetFileExInfoStandard, &data))
+		if (!vfs_utf8_to_wide(native_path, wide_path, sizeof(wide_path) / sizeof(wide_path[0])))
+			return false;
+
+		if (!GetFileAttributesExW(wide_path, GetFileExInfoStandard, &data))
 			return false;
 
 		file_size.HighPart = (LONG)data.nFileSizeHigh;
@@ -432,7 +709,13 @@ static int vfs_mkdir_single(const char *path)
 		return -1;
 
 #if defined(_WIN32)
-	rc = _mkdir(path);
+	{
+		wchar_t wide_path[VFS_PATH_MAX];
+
+		if (!vfs_utf8_to_wide(path, wide_path, sizeof(wide_path) / sizeof(wide_path[0])))
+			return -1;
+		rc = _wmkdir(wide_path);
+	}
 #else
 	rc = mkdir(path, 0755);
 #endif
@@ -544,7 +827,7 @@ static struct retro_vfs_file_handle *retro_vfs_file_open_impl(const char *path, 
 		return NULL;
 
 	snprintf(stream->path, sizeof(stream->path), "%s", native_path);
-	stream->fp = fopen(native_path, fmode);
+	stream->fp = vfs_fopen(native_path, fmode);
 
 	if (core_path_contains("ppsspp") && vfs_is_content_image_path(native_path))
 		log_printf("core", "VFS open path='%s' mode=0x%x hints=0x%x fmode='%s'",
@@ -554,7 +837,7 @@ static struct retro_vfs_file_handle *retro_vfs_file_open_impl(const char *path, 
 		char parent[VFS_PATH_MAX];
 		if (vfs_extract_parent_path(native_path, parent, sizeof(parent)))
 			vfs_mkdir_recursive(parent);
-		stream->fp = fopen(native_path, fmode);
+		stream->fp = vfs_fopen(native_path, fmode);
 	}
 
 	if (!stream->fp) {
@@ -688,7 +971,7 @@ static int retro_vfs_file_remove_impl(const char *path)
 		return -1;
 
 	vfs_resolve_path(native_path, sizeof(native_path), path);
-	return remove(native_path) == 0 ? 0 : -1;
+	return vfs_remove_utf8(native_path) == 0 ? 0 : -1;
 }
 
 static int retro_vfs_file_rename_impl(const char *old_path, const char *new_path)
@@ -701,7 +984,7 @@ static int retro_vfs_file_rename_impl(const char *old_path, const char *new_path
 
 	vfs_resolve_path(old_native, sizeof(old_native), old_path);
 	vfs_resolve_path(new_native, sizeof(new_native), new_path);
-	return rename(old_native, new_native) == 0 ? 0 : -1;
+	return vfs_rename_utf8(old_native, new_native) == 0 ? 0 : -1;
 }
 
 static int retro_vfs_stat_impl(const char *path, int32_t *size)
@@ -721,7 +1004,6 @@ static int retro_vfs_stat_impl(const char *path, int32_t *size)
 	if (core_path_contains("ppsspp") && vfs_is_content_image_path(path))
 		log_printf("core", "VFS stat path='%s' -> size=%lld is_dir=%d",
 			path, (long long)file_size, is_dir ? 1 : 0);
-
 	return RETRO_VFS_STAT_IS_VALID | (is_dir ? RETRO_VFS_STAT_IS_DIRECTORY : 0);
 }
 
@@ -748,6 +1030,7 @@ static struct retro_vfs_dir_handle *retro_vfs_opendir_impl(const char *dir, bool
 	{
 		char native_path[VFS_PATH_MAX];
 		char pattern[VFS_PATH_MAX];
+		wchar_t wide_pattern[VFS_PATH_MAX];
 		size_t len = 0;
 
 		snprintf(native_path, sizeof(native_path), "%s", dirstream->dirpath);
@@ -758,7 +1041,12 @@ static struct retro_vfs_dir_handle *retro_vfs_opendir_impl(const char *dir, bool
 		else
 			snprintf(pattern + len, sizeof(pattern) - len, "*");
 
-		dirstream->handle = FindFirstFileA(pattern, &dirstream->data);
+		if (!vfs_utf8_to_wide(pattern, wide_pattern, sizeof(wide_pattern) / sizeof(wide_pattern[0]))) {
+			free(dirstream);
+			return NULL;
+		}
+
+		dirstream->handle = FindFirstFileW(wide_pattern, &dirstream->data);
 		if (dirstream->handle == INVALID_HANDLE_VALUE) {
 			free(dirstream);
 			return NULL;
@@ -787,17 +1075,21 @@ static bool retro_vfs_readdir_impl(struct retro_vfs_dir_handle *dirstream)
 
 #if defined(_WIN32)
 	for (;;) {
-		WIN32_FIND_DATAA *data = &dirstream->data;
+		WIN32_FIND_DATAW *data = &dirstream->data;
+		char utf8_name[VFS_PATH_MAX];
 		if (dirstream->first)
 			dirstream->first = false;
-		else if (!FindNextFileA(dirstream->handle, data))
+		else if (!FindNextFileW(dirstream->handle, data))
 			return false;
 
-		if (!dirstream->include_hidden &&
-			((data->dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) || data->cFileName[0] == '.'))
+		if (!vfs_wide_to_utf8(data->cFileName, utf8_name, sizeof(utf8_name)))
 			continue;
 
-		snprintf(dirstream->name, sizeof(dirstream->name), "%s", data->cFileName);
+		if (!dirstream->include_hidden &&
+			((data->dwFileAttributes & FILE_ATTRIBUTE_HIDDEN) || utf8_name[0] == '.'))
+			continue;
+
+		snprintf(dirstream->name, sizeof(dirstream->name), "%s", utf8_name);
 		dirstream->is_dir = (data->dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 		return true;
 	}
@@ -921,25 +1213,46 @@ static void prepare_ppsspp_game_save_dirs(const char *content_path)
 	}
 }
 
+static void prepare_core_directories(void)
+{
+	if (core_dirs_prepared)
+		return;
+
+	vfs_resolve_path(core_system_dir, sizeof(core_system_dir), "./system");
+	vfs_resolve_path(core_save_dir, sizeof(core_save_dir), "./saves");
+	vfs_resolve_path(core_memstick_dir, sizeof(core_memstick_dir), "./memstick");
+
+	if (core_system_dir[0])
+		ensure_directory_exists(core_system_dir);
+
+	if (core_save_dir[0])
+		ensure_directory_exists(core_save_dir);
+
+	core_dirs_prepared = true;
+}
+
 static const char *core_system_directory(void)
 {
-	return ".";
+	prepare_core_directories();
+	return core_system_dir[0] ? core_system_dir : "./system";
 }
 
 static const char *core_save_directory(void)
 {
+	prepare_core_directories();
+
 	if (core_path_contains("ppsspp")) {
 		if (!ppsspp_save_root_prepared) {
 			bool created = prepare_ppsspp_save_root();
 			log_printf("core", "PPSSPP save root '%s' prepared=%s (memstick layout)",
-				"./memstick",
+				core_memstick_dir[0] ? core_memstick_dir : "./memstick",
 				created ? "yes" : "no");
 			ppsspp_save_root_prepared = true;
 		}
-		return "./memstick";
+		return core_memstick_dir[0] ? core_memstick_dir : "./memstick";
 	}
 
-	return ".";
+	return core_save_dir[0] ? core_save_dir : "./saves";
 }
 
 static const char *core_assets_directory(void)
@@ -953,6 +1266,12 @@ static bool core_set_rumble_state(unsigned port, enum retro_rumble_effect effect
 	(void)effect;
 	(void)strength;
 	return false;
+}
+
+static void core_set_led_state(int led, int state)
+{
+	(void)led;
+	(void)state;
 }
 
 static void core_log(enum retro_log_level level, const char *fmt, ...)
@@ -1048,10 +1367,26 @@ static bool core_environment(unsigned cmd, void *data)
 			opt_clear_updated();
 		}
 		break;
+		case RETRO_ENVIRONMENT_GET_MESSAGE_INTERFACE_VERSION: {
+			*(unsigned *)data = 1;
+			return true;
+		}
 		case RETRO_ENVIRONMENT_SHUTDOWN: {
+			log_printf("core", "RETRO_ENVIRONMENT_SHUTDOWN requested by core");
 			video_should_close(1);
 		}
 		break;
+		case RETRO_ENVIRONMENT_SET_MESSAGE: {
+			const struct retro_message *msg = (const struct retro_message *)data;
+			if (msg && msg->msg) {
+				log_printf("core", "SET_MESSAGE frames=%u text='%s'",
+					msg->frames, msg->msg);
+				strncpy(core_message_buf, msg->msg, sizeof(core_message_buf) - 1);
+				core_message_buf[sizeof(core_message_buf) - 1] = '\0';
+				core_message_remaining = (int)msg->frames;
+			}
+			return true;
+		}
 		case RETRO_ENVIRONMENT_GET_AUDIO_VIDEO_ENABLE: {
 			*(int*)data = 1 << 0 | 1 << 1;
 		}
@@ -1059,18 +1394,71 @@ static bool core_environment(unsigned cmd, void *data)
 		case RETRO_ENVIRONMENT_SET_FRAME_TIME_CALLBACK: {
 			const struct retro_frame_time_callback *cb =
 				(const struct retro_frame_time_callback*)data;
-			runloop_frame_time = *cb;
+			if (cb) {
+				runloop_frame_time = *cb;
+			} else {
+				memset(&runloop_frame_time, 0, sizeof(runloop_frame_time));
+				runloop_frame_time_last = 0;
+			}
 		}
 		break;
 		case RETRO_ENVIRONMENT_SET_KEYBOARD_CALLBACK: {
 			const struct retro_keyboard_callback *cb =
 				(const struct retro_keyboard_callback*)data;
-			input_set_keyboard_callback(cb->callback);
+			input_set_keyboard_callback(cb ? cb->callback : NULL);
 		}
 		break;
+		case RETRO_ENVIRONMENT_SET_SUPPORT_NO_GAME:
+			log_printf("core", "SET_SUPPORT_NO_GAME accepted");
+			return true;
+		case RETRO_ENVIRONMENT_GET_DISK_CONTROL_INTERFACE_VERSION:
+			if (!data)
+				return false;
+			*(unsigned *)data = 1;
+			log_printf("core", "GET_DISK_CONTROL_INTERFACE_VERSION -> 1");
+			return true;
+		case RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE:
+			if (!data)
+				return false;
+			disk_control_cb = *(const struct retro_disk_control_callback *)data;
+			log_printf("core", "SET_DISK_CONTROL_INTERFACE accepted");
+			return true;
+		case RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE:
+			if (!data)
+				return false;
+			disk_control_ext_cb = *(const struct retro_disk_control_ext_callback *)data;
+			log_printf("core", "SET_DISK_CONTROL_EXT_INTERFACE accepted");
+			return true;
+		case RETRO_ENVIRONMENT_SET_SUPPORT_ACHIEVEMENTS:
+			log_printf("core", "SET_SUPPORT_ACHIEVEMENTS accepted");
+			return true;
+		case RETRO_ENVIRONMENT_GET_LED_INTERFACE: {
+			struct retro_led_interface *iface = (struct retro_led_interface *)data;
+			if (!iface)
+				return false;
+			iface->set_led_state = core_set_led_state;
+			log_printf("core", "GET_LED_INTERFACE -> stub");
+			return true;
+		}
+		case RETRO_ENVIRONMENT_SET_FASTFORWARDING_OVERRIDE:
+			if (!data)
+				return false;
+			fastforward_override = *(const struct retro_fastforwarding_override *)data;
+			log_printf("core", "SET_FASTFORWARDING_OVERRIDE accepted ratio=%.3f fastforward=%d notification=%d",
+				fastforward_override.ratio,
+				fastforward_override.fastforward ? 1 : 0,
+				fastforward_override.notification ? 1 : 0);
+			return true;
 		case RETRO_ENVIRONMENT_GET_PERF_INTERFACE: {
 			struct retro_perf_callback *perf_cb = (struct retro_perf_callback*)data;
+			if (!perf_cb) return false;
 			perf_cb->get_time_usec = get_time_usec;
+			perf_cb->get_cpu_features = NULL;
+			perf_cb->get_perf_counter = NULL;
+			perf_cb->perf_register = NULL;
+			perf_cb->perf_start = NULL;
+			perf_cb->perf_stop = NULL;
+			perf_cb->perf_log = NULL;
 		}
 		break;
 		case RETRO_ENVIRONMENT_SET_GEOMETRY: {
@@ -1195,6 +1583,26 @@ static bool core_environment(unsigned cmd, void *data)
 			opt_parse_v2_intl(data);
 			return true;
 		}
+		case RETRO_ENVIRONMENT_SET_MESSAGE_EXT: {
+			const struct retro_message_ext *msg = (const struct retro_message_ext *)data;
+			if (msg && msg->msg) {
+				log_printf("core",
+					"SET_MESSAGE_EXT target=%s type=%s level=%d duration=%u priority=%u progress=%d text='%s'",
+					message_target_name(msg->target),
+					message_type_name(msg->type),
+					(int)msg->level,
+					msg->duration,
+					msg->priority,
+					msg->progress,
+					msg->msg);
+				if (msg->duration > 0) {
+					strncpy(core_message_buf, msg->msg, sizeof(core_message_buf) - 1);
+					core_message_buf[sizeof(core_message_buf) - 1] = '\0';
+					core_message_remaining = (int)msg->duration;
+				}
+			}
+			return true;
+		}
 		case RETRO_ENVIRONMENT_SET_CORE_OPTIONS_DISPLAY: {
 			const struct retro_core_option_display *display =
 				(const struct retro_core_option_display *)data;
@@ -1216,6 +1624,7 @@ static bool core_environment(unsigned cmd, void *data)
 		}
 		case RETRO_ENVIRONMENT_GET_VARIABLE: {
 			struct retro_variable *var = (struct retro_variable*) data;
+			if (!var || !var->key) return false;
 			bool found = get_option(var->key, &var->value);
 
 			if (should_log_variable_lookup(var->key)) {
@@ -1230,7 +1639,7 @@ static bool core_environment(unsigned cmd, void *data)
 		break;
 		case RETRO_ENVIRONMENT_SET_VARIABLE: {
 			if (!data)
-				return true;
+				return false;
 
 			const struct retro_variable *var = (const struct retro_variable *)data;
 
@@ -1277,6 +1686,11 @@ static bool core_environment(unsigned cmd, void *data)
 				return false;
 			}
 
+			if (core_path_contains("pcsx2")) {
+				log_printf("core", "GET_VFS_INTERFACE skipped for PCSX2 (using native file access)");
+				return false;
+			}
+
 			if (info->required_interface_version > 3) {
 				log_printf("core", "GET_VFS_INTERFACE requested v%u, unsupported",
 					info->required_interface_version);
@@ -1312,6 +1726,60 @@ static bool core_environment(unsigned cmd, void *data)
 			log_printf("core", "GET_CORE_ASSETS_DIRECTORY -> %s",
 				*(const char **)data ? *(const char **)data : "(null)");
 			return true;
+		case RETRO_ENVIRONMENT_GET_LIBRETRO_PATH:
+			if (!data)
+				return false;
+			*(const char **)data = g_cfg.core ? g_cfg.core : "";
+			return true;
+
+		case RETRO_ENVIRONMENT_SET_SERIALIZATION_QUIRKS:
+			log_printf("core", "SET_SERIALIZATION_QUIRKS accepted value=%llu",
+				data ? (unsigned long long)*(uint64_t*)data : 0ULL);
+			return true;
+		case RETRO_ENVIRONMENT_SET_AUDIO_CALLBACK: {
+			const struct retro_audio_callback *cb =
+				(const struct retro_audio_callback *)data;
+			if (!cb) return false;
+			audio_cb = *cb;
+			audio_cb_active = (cb->callback != NULL);
+			log_printf("core", "SET_AUDIO_CALLBACK registered callback=%p",
+				(void*)(cb->callback));
+			return true;
+		}
+		case RETRO_ENVIRONMENT_SET_PROC_ADDRESS_CALLBACK:
+			if (!data) return false;
+			log_printf("core", "SET_PROC_ADDRESS_CALLBACK accepted");
+			return true;
+		case RETRO_ENVIRONMENT_GET_JIT_CAPABLE:
+			if (!data) return false;
+			*(bool*)data = false;
+			log_printf("core", "GET_JIT_CAPABLE -> false");
+			return true;
+		case RETRO_ENVIRONMENT_SET_ROTATION: {
+			if (!data) return false;
+			unsigned rotation = *(const unsigned *)data;
+			log_printf("core", "SET_ROTATION %u", rotation);
+			return true;
+		}
+		case RETRO_ENVIRONMENT_GET_INPUT_MAX_USERS:
+			if (!data) return false;
+			*(unsigned *)data = 5;
+			return true;
+		case RETRO_ENVIRONMENT_SET_PERFORMANCE_LEVEL:
+			log_printf("core", "SET_PERFORMANCE_LEVEL value=%u",
+				data ? *(const unsigned *)data : 0);
+			return true;
+		case RETRO_ENVIRONMENT_GET_TARGET_REFRESH_RATE:
+			if (!data) return false;
+			*(float *)data = core_nominal_fps;
+			return true;
+		case RETRO_ENVIRONMENT_GET_INPUT_DEVICE_CAPABILITIES:
+			if (!data) return false;
+			*(uint64_t*)data = (1ULL << RETRO_DEVICE_JOYPAD) |
+			                  (1ULL << RETRO_DEVICE_MOUSE) |
+			                  (1ULL << RETRO_DEVICE_KEYBOARD) |
+			                  (1ULL << RETRO_DEVICE_ANALOG);
+			return true;
 
 		default:
 			if ((cmd & 0xFFFF0000u) &&
@@ -1334,8 +1802,6 @@ static bool core_environment(unsigned cmd, void *data)
 	return true;
 }
 
-void input_poll_dummy(void) {}
-
 void core_load(const char *sofile)
 {
 	void (*set_environment)(retro_environment_t) = NULL;
@@ -1344,9 +1810,15 @@ void core_load(const char *sofile)
 	void (*set_input_state)(retro_input_state_t) = NULL;
 	void (*set_audio_sample)(retro_audio_sample_t) = NULL;
 	void (*set_audio_sample_batch)(retro_audio_sample_batch_t) = NULL;
+	int options_preload_result = 0;
 
 	memset(&core, 0, sizeof(core));
 	log_printf("core", "loading core library: %s", sofile ? sofile : "(null)");
+	options_preload_result = opt_load("./options.ini");
+	if (options_preload_result < 0)
+		log_printf("core", "options.ini preload unavailable before retro_init");
+	else
+		log_printf("core", "options.ini preloaded before retro_init");
 	core.handle = load_lib(sofile);
 
 	if (!core.handle)
@@ -1375,7 +1847,7 @@ void core_load(const char *sofile)
 	set_environment(core_environment);
 	core.retro_init();
 	set_video_refresh(video_refresh);
-	set_input_poll(input_poll_dummy);
+	set_input_poll(input_poll);
 	set_input_state(input_state);
 	set_audio_sample(audio_sample);
 	set_audio_sample_batch(audio_sample_batch);
@@ -1397,6 +1869,7 @@ void core_load_game(const char *filename)
 	vfs_resolve_path(resolved_filename, sizeof(resolved_filename), filename);
 	if (resolved_filename[0])
 		content_path = resolved_filename;
+	content_path = prepare_qemu_cmd_line_path(content_path);
 
 	info.path = content_path;
 	prepare_ppsspp_game_save_dirs(content_path);
@@ -1411,7 +1884,7 @@ void core_load_game(const char *filename)
 		si.valid_extensions ? si.valid_extensions : "(null)");
 
 	if (!si.need_fullpath) {
-		file = fopen(content_path, "rb");
+		file = vfs_fopen(content_path, "rb");
 
 		if (!file)
 			die("The core could not open the file.");
@@ -1428,7 +1901,7 @@ void core_load_game(const char *filename)
 		fclose(file);
 		file = NULL;
 	} else {
-		file = fopen(content_path, "rb");
+		file = vfs_fopen(content_path, "rb");
 		if (!file)
 			die("The core could not open the file.");
 		fseek(file, 0, SEEK_END);
@@ -1462,10 +1935,16 @@ void core_load_game(const char *filename)
 	video_configure(&av.geometry);
 	audio_init(av.timing.sample_rate);
 
-	if (g_cfg.port0) core.retro_set_controller_port_device(0, g_cfg.port0);
-	if (g_cfg.port1) core.retro_set_controller_port_device(1, g_cfg.port1);
-	if (g_cfg.port2) core.retro_set_controller_port_device(2, g_cfg.port2);
-	if (g_cfg.port3) core.retro_set_controller_port_device(3, g_cfg.port3);
+	/* Ativa áudio via callback (MAME etc) após dispositivo de áudio estar pronto */
+	if (audio_cb_active && audio_cb.set_state) {
+		audio_cb.set_state(true);
+		audio_start_thread();
+	}
+
+	core.retro_set_controller_port_device(0, g_cfg.port0 ? g_cfg.port0 : RETRO_DEVICE_JOYPAD);
+	core.retro_set_controller_port_device(1, g_cfg.port1 ? g_cfg.port1 : RETRO_DEVICE_JOYPAD);
+	core.retro_set_controller_port_device(2, g_cfg.port2 ? g_cfg.port2 : RETRO_DEVICE_JOYPAD);
+	core.retro_set_controller_port_device(3, g_cfg.port3 ? g_cfg.port3 : RETRO_DEVICE_JOYPAD);
 
 	return;
 }
@@ -1486,6 +1965,9 @@ void core_run()
 		runloop_frame_time.callback(delta);
 	}
 
+	/* Audio pull is now handled by the dedicated audio thread.
+	 * No synchronous audio_callback_pull() needed here. */
+
 	core.retro_run();
 }
 
@@ -1504,11 +1986,39 @@ void *core_get_memory_data(unsigned id)
 	return core.retro_get_memory_data(id);
 }
 
+void core_message_update(void)
+{
+	if (core_message_remaining > 0)
+		core_message_remaining--;
+}
+
+const char *core_message_text(void)
+{
+	if (core_message_remaining <= 0 || core_message_buf[0] == '\0')
+		return NULL;
+	return core_message_buf;
+}
+
+int core_message_frames(void)
+{
+	return core_message_remaining;
+}
+
 void core_unload()
 {
+	/* Stop audio thread before unloading — the callback pointer
+	 * belongs to the core library and must not be called after
+	 * retro_deinit / dlclose. */
+	audio_stop_thread();
+
 	if (core.initialized)
 		core.retro_deinit();
 
 	if (core.handle)
 		close_lib(core.handle);
+
+	if (qemu_cmd_line_sanitized_path[0]) {
+		vfs_remove_utf8(qemu_cmd_line_sanitized_path);
+		qemu_cmd_line_sanitized_path[0] = '\0';
+	}
 }

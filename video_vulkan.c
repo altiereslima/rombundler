@@ -65,6 +65,7 @@ typedef struct {
 	VkSemaphore *render_finished;
 	VkFence *frame_fences;
 	uint32_t *image_fence_slots;
+	bool *sync_index_wait_ready;
 	uint32_t next_frame_slot;
 	uint32_t current_frame_slot;
 	uint32_t current_image_index;
@@ -90,6 +91,7 @@ typedef struct {
 } video_vulkan_state;
 
 static video_vulkan_state g_vk = {0};
+static bool g_vk_logged_ignored_image_waits = false;
 
 #ifdef _WIN32
 static CRITICAL_SECTION g_vk_queue_lock;
@@ -97,6 +99,30 @@ static bool g_vk_queue_lock_initialized = false;
 #else
 static pthread_mutex_t g_vk_queue_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_vk_queue_lock_initialized = false;
+#endif
+
+#ifdef _WIN32
+static void video_vulkan_log_problematic_overlay_hooks(void)
+{
+	static bool logged = false;
+	HMODULE rtss_hooks = NULL;
+	HMODULE rtss_vk = NULL;
+
+	if (logged)
+		return;
+	logged = true;
+
+	rtss_hooks = GetModuleHandleA("RTSSHooks64.dll");
+	rtss_vk = GetModuleHandleA("RTSSVkLayer64.dll");
+	if (rtss_hooks || rtss_vk) {
+		log_printf("video",
+			"RTSS/MSI Afterburner hooks detected in-process; some Vulkan cores may stall until the overlay is disabled");
+	}
+}
+#else
+static void video_vulkan_log_problematic_overlay_hooks(void)
+{
+}
 #endif
 
 static void video_vulkan_queue_lock_init(void)
@@ -159,6 +185,37 @@ static void *video_vulkan_realloc(void *ptr, size_t size)
 	if (size && !out)
 		die("Out of memory while growing Vulkan state.");
 	return out;
+}
+
+static bool video_vulkan_wait_for_fence_with_timeout(const char *reason,
+	VkFence fence, uint32_t sync_index, uint32_t slot, uint64_t timeout_ns)
+{
+	VkResult res;
+
+	if (fence == VK_NULL_HANDLE)
+		return true;
+
+	res = vkWaitForFences(g_vk.device, 1, &fence, VK_TRUE, timeout_ns);
+	if (res == VK_SUCCESS)
+		return true;
+
+	if (res == VK_TIMEOUT) {
+		log_printf("video",
+			"%s fence wait timed out sync=%u slot=%u timeout_ms=%llu",
+			reason ? reason : "vulkan",
+			sync_index,
+			slot,
+			(unsigned long long)(timeout_ns / 1000000ULL));
+		return false;
+	}
+
+	log_printf("video",
+		"%s fence wait failed sync=%u slot=%u result=%d",
+		reason ? reason : "vulkan",
+		sync_index,
+		slot,
+		(int)res);
+	return false;
 }
 
 static bool video_vulkan_string_exists(const char *const *values, unsigned count, const char *needle)
@@ -279,11 +336,21 @@ static void video_vulkan_wait_sync_index(void *handle)
 	    g_vk.current_image_index >= g_vk.swapchain_image_count)
 		return;
 
+	if (g_vk.sync_index_wait_ready &&
+	    g_vk.sync_index_wait_ready[g_vk.current_image_index])
+		return;
+
 	slot = g_vk.image_fence_slots[g_vk.current_image_index];
 	if (slot == UINT32_MAX || slot >= g_vk.swapchain_image_count)
 		return;
 
-	vkWaitForFences(g_vk.device, 1, &g_vk.frame_fences[slot], VK_TRUE, UINT64_MAX);
+	if (!video_vulkan_wait_for_fence_with_timeout("wait_sync_index",
+		g_vk.frame_fences[slot],
+		g_vk.current_image_index,
+		slot,
+		1000000000ULL)) {
+		g_vk.image_fence_slots[g_vk.current_image_index] = UINT32_MAX;
+	}
 }
 
 static void video_vulkan_set_command_buffers(void *handle, uint32_t num_cmd,
@@ -829,6 +896,7 @@ static void video_vulkan_destroy_swapchain(void)
 	free(g_vk.render_finished);
 	free(g_vk.frame_fences);
 	free(g_vk.image_fence_slots);
+	free(g_vk.sync_index_wait_ready);
 
 	g_vk.swapchain = VK_NULL_HANDLE;
 	g_vk.swapchain_images = NULL;
@@ -838,6 +906,7 @@ static void video_vulkan_destroy_swapchain(void)
 	g_vk.render_finished = NULL;
 	g_vk.frame_fences = NULL;
 	g_vk.image_fence_slots = NULL;
+	g_vk.sync_index_wait_ready = NULL;
 	g_vk.swapchain_image_count = 0;
 	g_vk.frame_acquired = false;
 	g_vk.current_image_index = 0;
@@ -974,11 +1043,12 @@ static bool video_vulkan_create_swapchain(void)
 	g_vk.render_finished = (VkSemaphore *)calloc(image_count, sizeof(VkSemaphore));
 	g_vk.frame_fences = (VkFence *)calloc(image_count, sizeof(VkFence));
 	g_vk.image_fence_slots = (uint32_t *)calloc(image_count, sizeof(uint32_t));
+	g_vk.sync_index_wait_ready = (bool *)calloc(image_count, sizeof(bool));
 
 	if (!g_vk.swapchain_images || !g_vk.swapchain_image_initialized ||
 	    !g_vk.command_buffers || !g_vk.image_available ||
 	    !g_vk.render_finished || !g_vk.frame_fences ||
-	    !g_vk.image_fence_slots)
+	    !g_vk.image_fence_slots || !g_vk.sync_index_wait_ready)
 		die("Out of memory while allocating Vulkan swapchain objects.");
 
 	if (vkGetSwapchainImagesKHR(g_vk.device, g_vk.swapchain, &image_count,
@@ -1364,6 +1434,7 @@ bool video_vulkan_init(GLFWwindow *window,
 		return true;
 
 	video_vulkan_queue_lock_init();
+	video_vulkan_log_problematic_overlay_hooks();
 
 	if (!video_vulkan_create_instance())
 		return false;
@@ -1427,10 +1498,18 @@ void video_vulkan_begin_frame(void)
 	if (g_vk.swapchain == VK_NULL_HANDLE || !g_vk.swapchain_image_count)
 		return;
 
+	if (g_vk.sync_index_wait_ready)
+		memset(g_vk.sync_index_wait_ready, 0, sizeof(bool) * g_vk.swapchain_image_count);
+
 	slot = g_vk.next_frame_slot;
 	g_vk.next_frame_slot = (slot + 1) % g_vk.swapchain_image_count;
 
-	vkWaitForFences(g_vk.device, 1, &g_vk.frame_fences[slot], VK_TRUE, UINT64_MAX);
+	if (!video_vulkan_wait_for_fence_with_timeout("begin_frame_slot",
+		g_vk.frame_fences[slot],
+		g_vk.current_image_index,
+		slot,
+		1000000000ULL))
+		return;
 	vkResetFences(g_vk.device, 1, &g_vk.frame_fences[slot]);
 
 	res = vkAcquireNextImageKHR(g_vk.device,
@@ -1452,8 +1531,22 @@ void video_vulkan_begin_frame(void)
 	}
 
 	previous_slot = g_vk.image_fence_slots[g_vk.current_image_index];
-	if (previous_slot != UINT32_MAX && previous_slot != slot)
-		vkWaitForFences(g_vk.device, 1, &g_vk.frame_fences[previous_slot], VK_TRUE, UINT64_MAX);
+	if (previous_slot == UINT32_MAX || previous_slot == slot) {
+		if (g_vk.sync_index_wait_ready)
+			g_vk.sync_index_wait_ready[g_vk.current_image_index] = true;
+	} else {
+		if (!video_vulkan_wait_for_fence_with_timeout("begin_frame_previous_slot",
+			g_vk.frame_fences[previous_slot],
+			g_vk.current_image_index,
+			previous_slot,
+			1000000000ULL)) {
+			g_vk.image_fence_slots[g_vk.current_image_index] = UINT32_MAX;
+			return;
+		}
+
+		if (g_vk.sync_index_wait_ready)
+			g_vk.sync_index_wait_ready[g_vk.current_image_index] = true;
+	}
 
 	g_vk.current_frame_slot = slot;
 	g_vk.frame_acquired = true;
@@ -1507,6 +1600,7 @@ void video_vulkan_render(void)
 	uint32_t wait_count;
 	uint32_t command_count;
 	uint32_t signal_count = 0;
+	bool ignore_image_waits;
 
 	if (!g_vk.initialized || !g_vk.frame_acquired)
 		return;
@@ -1545,7 +1639,19 @@ void video_vulkan_render(void)
 		return;
 	}
 
-	wait_count = 1 + g_vk.wait_count;
+	/* Per libretro_vulkan.h, semaphores passed via set_image() must be
+	 * ignored when the core also passes command buffers for frontend submission.
+	 * Waiting on both can deadlock because the core expects those command buffers
+	 * to be submitted by the frontend, not by the core itself. */
+	ignore_image_waits = g_vk.core_command_count > 0;
+	if (ignore_image_waits && g_vk.wait_count && !g_vk_logged_ignored_image_waits) {
+		log_printf("video",
+			"ignoring %u set_image semaphore(s) because core submitted %u command buffer(s)",
+			g_vk.wait_count,
+			g_vk.core_command_count);
+		g_vk_logged_ignored_image_waits = true;
+	}
+	wait_count = 1 + (ignore_image_waits ? 0u : g_vk.wait_count);
 	waits = (VkSemaphore *)malloc(sizeof(VkSemaphore) * wait_count);
 	wait_stages = (VkPipelineStageFlags *)malloc(sizeof(VkPipelineStageFlags) * wait_count);
 	if (!waits || !wait_stages)
@@ -1553,7 +1659,7 @@ void video_vulkan_render(void)
 
 	waits[0] = g_vk.image_available[g_vk.current_frame_slot];
 	wait_stages[0] = VK_PIPELINE_STAGE_TRANSFER_BIT;
-	if (g_vk.wait_count) {
+	if (!ignore_image_waits && g_vk.wait_count) {
 		memcpy(&waits[1], g_vk.wait_semaphores, sizeof(VkSemaphore) * g_vk.wait_count);
 		memcpy(&wait_stages[1], g_vk.wait_stages, sizeof(VkPipelineStageFlags) * g_vk.wait_count);
 	}

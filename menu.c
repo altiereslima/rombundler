@@ -46,9 +46,11 @@ static double     last_input_time = 0;
 
 /* Remap capture state */
 static bool       remap_capturing = false;
-static bool       remap_wait_release = false;  /* Wait for all buttons released before capturing */
+static double     remap_capture_start = 0.0;
 static int        remap_capture_port = 0;
 static int        remap_capture_button = -1;
+
+#define REMAP_CAPTURE_DELAY 0.4   /* Esperar soltar o botão de confirmação */
 
 /* ─────────────────── Helpers ─────────────────── */
 
@@ -404,21 +406,21 @@ static const char *retro_button_display_name(int port, int id)
 static const char *glfw_button_name(int btn)
 {
 	switch (btn) {
-		case GLFW_GAMEPAD_BUTTON_A:            return "A";
-		case GLFW_GAMEPAD_BUTTON_B:            return "B";
-		case GLFW_GAMEPAD_BUTTON_X:            return "X";
-		case GLFW_GAMEPAD_BUTTON_Y:            return "Y";
+		case GLFW_GAMEPAD_BUTTON_A:            return "A (inf.)";
+		case GLFW_GAMEPAD_BUTTON_B:            return "B (dir.)";
+		case GLFW_GAMEPAD_BUTTON_X:            return "X (esq.)";
+		case GLFW_GAMEPAD_BUTTON_Y:            return "Y (cima)";
 		case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER:  return "LB";
 		case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: return "RB";
-		case GLFW_GAMEPAD_BUTTON_BACK:         return "Back";
+		case GLFW_GAMEPAD_BUTTON_BACK:         return "Select";
 		case GLFW_GAMEPAD_BUTTON_START:        return "Start";
 		case GLFW_GAMEPAD_BUTTON_GUIDE:        return "Guide";
 		case GLFW_GAMEPAD_BUTTON_LEFT_THUMB:   return "L3";
 		case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB:  return "R3";
-		case GLFW_GAMEPAD_BUTTON_DPAD_UP:      return "D-Up";
-		case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT:   return "D-Right";
-		case GLFW_GAMEPAD_BUTTON_DPAD_DOWN:    return "D-Down";
-		case GLFW_GAMEPAD_BUTTON_DPAD_LEFT:    return "D-Left";
+		case GLFW_GAMEPAD_BUTTON_DPAD_UP:      return "D-Cima";
+		case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT:   return "D-Dir";
+		case GLFW_GAMEPAD_BUTTON_DPAD_DOWN:    return "D-Baixo";
+		case GLFW_GAMEPAD_BUTTON_DPAD_LEFT:    return "D-Esq";
 		default: return "???";
 	}
 }
@@ -633,7 +635,7 @@ static bool input_page_audio(void)
 		audio_set_volume(vol);
 	} else if (nav_right() && menu_sel == 0) {
 		int vol = audio_get_volume() + 10;
-		if (vol > 100) vol = 100;
+		if (vol > 200) vol = 200;
 		audio_set_volume(vol);
 	}
 
@@ -669,13 +671,22 @@ static void render_page_input(void)
 		int sel_idx = i + 1;
 		const char *btn_name = retro_button_display_name(remap_port_sel, i);
 		unsigned mapped = remap_get(remap_port_sel, i);
+		const char *phys_name;
+
+		/* L2/R2: por padrão usam gatilhos analógicos, não botões */
+		if (i == RETRO_DEVICE_ID_JOYPAD_L2 && mapped == 0)
+			phys_name = "LT (analog.)";
+		else if (i == RETRO_DEVICE_ID_JOYPAD_R2 && mapped == 0)
+			phys_name = "RT (analog.)";
+		else
+			phys_name = glfw_button_name(mapped);
 
 		char buf[128];
 		if (remap_capturing && remap_capture_button == i && remap_capture_port == remap_port_sel) {
 			snprintf(buf, sizeof(buf), "  %s: %s", btn_name, lang_get(STR_PRESS_BUTTON));
 			y = render_item(x, y, buf, true, false);
 		} else {
-			snprintf(buf, sizeof(buf), "%s -> %s", btn_name, glfw_button_name(mapped));
+			snprintf(buf, sizeof(buf), "%s -> %s", btn_name, phys_name);
 			y = render_kv_item(x, y, "", buf, menu_sel == sel_idx);
 		}
 	}
@@ -695,47 +706,44 @@ static bool input_page_input(void)
 
 	/* Remap capture mode */
 	if (remap_capturing) {
-		/* Also check keyboard Escape to cancel */
 		if (key_pressed(GLFW_KEY_ESCAPE)) {
 			remap_capturing = false;
-			remap_wait_release = false;
 			last_input_time = glfwGetTime() + 0.3;
 			return false;
 		}
 
-		/* Phase 1: Wait for ALL buttons to be released first */
-		if (remap_wait_release) {
-			bool any_pressed = false;
-			/* Check keyboard confirm keys */
-			if (key_pressed(GLFW_KEY_ENTER)) any_pressed = true;
-			/* Check all gamepad buttons */
-			for (int port = 0; port < MAX_REMAP_PORTS && !any_pressed; port++) {
-				if (!glfwJoystickIsGamepad(port)) continue;
-				GLFWgamepadstate pad;
-				if (!glfwGetGamepadState(port, &pad)) continue;
-				for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; b++) {
-					if (pad.buttons[b] == GLFW_PRESS) {
-						any_pressed = true;
-						break;
-					}
-				}
-			}
-			if (!any_pressed)
-				remap_wait_release = false; /* All released, move to phase 2 */
+		/* Aguarda 0.4s para garantir que o botão de confirmação foi solto */
+		if (glfwGetTime() - remap_capture_start < REMAP_CAPTURE_DELAY)
 			return false;
-		}
 
-		/* Phase 2: Capture the first NEW button press */
+		/* Captura o primeiro botão/gatilho pressionado */
 		for (int port = 0; port < MAX_REMAP_PORTS; port++) {
 			if (!glfwJoystickIsGamepad(port)) continue;
 			GLFWgamepadstate pad;
 			if (!glfwGetGamepadState(port, &pad)) continue;
+
+			/* Gatilhos analógicos (LT/RT) */
+			if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] > 0.5f) {
+				remap_set(remap_capture_port, remap_capture_button, 0);
+				remap_capturing = false;
+				remap_save();
+				last_input_time = glfwGetTime() + 0.3;
+				return false;
+			}
+			if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.5f) {
+				remap_set(remap_capture_port, remap_capture_button, 0);
+				remap_capturing = false;
+				remap_save();
+				last_input_time = glfwGetTime() + 0.3;
+				return false;
+			}
+
 			for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; b++) {
 				if (pad.buttons[b] == GLFW_PRESS) {
 					remap_set(remap_capture_port, remap_capture_button, b);
 					remap_capturing = false;
 					remap_save();
-					last_input_time = glfwGetTime() + 0.3; /* Extra debounce */
+					last_input_time = glfwGetTime() + 0.3;
 					return false;
 				}
 			}
@@ -770,7 +778,7 @@ static bool input_page_input(void)
 		} else if (menu_sel >= 1 && menu_sel <= REMAP_BUTTONS) {
 			/* Start capture for this button — wait for release first */
 			remap_capturing = true;
-			remap_wait_release = true;
+			remap_capture_start = glfwGetTime();
 			remap_capture_port = remap_port_sel;
 			remap_capture_button = menu_sel - 1;
 		} else if (menu_sel == REMAP_BUTTONS + 1) {
@@ -933,6 +941,16 @@ static void render_page_aspect(void)
 		                 FONT_COLOR_YELLOW, scale * 0.8f, scr_w, scr_h);
 	}
 
+	/* Show zoom level info if in Zoom mode */
+	if (aspect_get_mode() == ASPECT_ZOOM) {
+		y += 10.0f;
+		char pp_info[64];
+		snprintf(pp_info, sizeof(pp_info), "Zoom: %d%%  (RT=+5%%  LT=-5%%)",
+		         aspect_zoom_pct());
+		font_render_text(x + 20.0f, y, pp_info,
+		                 FONT_COLOR_YELLOW, scale * 0.8f, scr_w, scr_h);
+	}
+
 	float fy = scr_h * 0.9f;
 	font_render_text(x, fy, lang_get(STR_HINT_ASPECT),
 	                 FONT_COLOR_GRAY, scale * 0.7f, scr_w, scr_h);
@@ -955,11 +973,20 @@ static bool input_page_aspect(void)
 		aspect_save();
 	}
 
+	/* RT/LT zoom in Zoom mode (anywhere on this page) */
+	if (aspect_get_mode() == ASPECT_ZOOM) {
+		if (nav_rt() && input_debounce()) { aspect_zoom_delta(5); aspect_save(); }
+		if (nav_lt() && input_debounce()) { aspect_zoom_delta(-5); aspect_save(); }
+	}
+
 	if (nav_confirm() && input_debounce()) {
 		switch (menu_sel) {
 			case 0: aspect_cycle(1); aspect_save(); break;
 			case 1:
-				aspect_set_mode(ASPECT_CUSTOM);
+				if (aspect_get_mode() == ASPECT_ZOOM)
+					aspect_set_mode(ASPECT_ZOOM);
+				else
+					aspect_set_mode(ASPECT_CUSTOM);
 				menu_page = MENU_PAGE_ASPECT_EDIT;
 				break;
 			case 2:
@@ -987,44 +1014,77 @@ static void render_page_aspect_edit(void)
 {
 	float x = scr_w * 0.1f;
 	float y = scr_h * 0.15f;
+	bool is_zoom = (aspect_get_mode() == ASPECT_ZOOM);
 
 	y = render_item(x, y, lang_get(STR_ASPECT_CUSTOM_EDIT), false, true);
 	y += 10.0f;
 
-	aspect_custom_t *c = aspect_get_custom();
-	char buf[128];
+	if (is_zoom) {
+		aspect_custom_t *c = aspect_get_custom();
+		char buf[128];
 
-	snprintf(buf, sizeof(buf), "X: %+d", c->off_x);
-	y = render_item(x, y, buf, false, false);
-	snprintf(buf, sizeof(buf), "Y: %+d", c->off_y);
-	y = render_item(x, y, buf, false, false);
-	snprintf(buf, sizeof(buf), "W: %+d", c->adj_w);
-	y = render_item(x, y, buf, false, false);
-	snprintf(buf, sizeof(buf), "H: %+d", c->adj_h);
-	y = render_item(x, y, buf, false, false);
+		snprintf(buf, sizeof(buf), "Zoom: %d%%", aspect_zoom_pct());
+		y = render_item(x, y, buf, false, false);
+		snprintf(buf, sizeof(buf), "X: %+d", c->off_x);
+		y = render_item(x, y, buf, false, false);
+		snprintf(buf, sizeof(buf), "Y: %+d", c->off_y);
+		y = render_item(x, y, buf, false, false);
 
-	float fy = scr_h * 0.9f;
-	font_render_text(x, fy, lang_get(STR_HINT_ASPECT_EDIT),
-	                 FONT_COLOR_GRAY, scale * 0.65f, scr_w, scr_h);
+		y += 10.0f;
+		char hint_zoom[128];
+		snprintf(hint_zoom, sizeof(hint_zoom),
+			"D-Pad: Mover   RT: Zoom+   LT: Zoom-   A/B: Voltar");
+		font_render_text(x, y, hint_zoom,
+		                 FONT_COLOR_YELLOW, scale * 0.65f, scr_w, scr_h);
+	} else {
+		aspect_custom_t *c = aspect_get_custom();
+		char buf[128];
+
+		snprintf(buf, sizeof(buf), "X: %+d", c->off_x);
+		y = render_item(x, y, buf, false, false);
+		snprintf(buf, sizeof(buf), "Y: %+d", c->off_y);
+		y = render_item(x, y, buf, false, false);
+		snprintf(buf, sizeof(buf), "W: %+d", c->adj_w);
+		y = render_item(x, y, buf, false, false);
+		snprintf(buf, sizeof(buf), "H: %+d", c->adj_h);
+		y = render_item(x, y, buf, false, false);
+
+		float fy = scr_h * 0.9f;
+		font_render_text(x, fy, lang_get(STR_HINT_ASPECT_EDIT),
+		                 FONT_COLOR_GRAY, scale * 0.65f, scr_w, scr_h);
+	}
 }
 
 static bool input_page_aspect_edit(void)
 {
 	aspect_custom_t *c = aspect_get_custom();
+	bool is_zoom = (aspect_get_mode() == ASPECT_ZOOM);
 
-	/* D-Pad: move position */
-	if (nav_up() && input_debounce())    c->off_y -= ASPECT_EDIT_STEP;
-	if (nav_down() && input_debounce())  c->off_y += ASPECT_EDIT_STEP;
-	if (nav_left() && input_debounce())  c->off_x -= ASPECT_EDIT_STEP;
-	if (nav_right() && input_debounce()) c->off_x += ASPECT_EDIT_STEP;
+	if (is_zoom) {
+		/* D-Pad: move position */
+		if (nav_up() && input_debounce())    c->off_y -= ASPECT_EDIT_STEP;
+		if (nav_down() && input_debounce())  c->off_y += ASPECT_EDIT_STEP;
+		if (nav_left() && input_debounce())  c->off_x -= ASPECT_EDIT_STEP;
+		if (nav_right() && input_debounce()) c->off_x += ASPECT_EDIT_STEP;
 
-	/* LB/RB: width */
-	if (nav_lb() && input_debounce()) c->adj_w -= ASPECT_EDIT_STEP;
-	if (nav_rb() && input_debounce()) c->adj_w += ASPECT_EDIT_STEP;
+		/* RT/LT: zoom */
+		if (nav_rt() && input_debounce()) aspect_zoom_delta(5);
+		if (nav_lt() && input_debounce()) aspect_zoom_delta(-5);
+	} else {
+		/* D-Pad: move position */
+		if (nav_up() && input_debounce())    c->off_y -= ASPECT_EDIT_STEP;
+		if (nav_down() && input_debounce())  c->off_y += ASPECT_EDIT_STEP;
+		if (nav_left() && input_debounce())  c->off_x -= ASPECT_EDIT_STEP;
+		if (nav_right() && input_debounce()) c->off_x += ASPECT_EDIT_STEP;
 
-	/* LT/RT: height */
-	if (nav_lt() && input_debounce()) c->adj_h -= ASPECT_EDIT_STEP;
-	if (nav_rt() && input_debounce()) c->adj_h += ASPECT_EDIT_STEP;
+		/* LB/RB: width */
+		if (nav_lb() && input_debounce()) c->adj_w -= ASPECT_EDIT_STEP;
+		if (nav_rb() && input_debounce()) c->adj_w += ASPECT_EDIT_STEP;
+
+		/* LT/RT: height */
+		if (nav_lt() && input_debounce()) c->adj_h -= ASPECT_EDIT_STEP;
+		if (nav_rt() && input_debounce()) c->adj_h += ASPECT_EDIT_STEP;
+	}
 
 	/* Confirm: save and go back */
 	if (nav_confirm() && input_debounce()) {
@@ -1032,8 +1092,9 @@ static bool input_page_aspect_edit(void)
 		menu_page = MENU_PAGE_ASPECT;
 		menu_sel = 1;
 	}
-	/* Cancel: go back without saving (values already modified in-place, but user expects cancel) */
+	/* Cancel: go back with saving */
 	if (nav_back() && input_debounce()) {
+		aspect_save();
 		menu_page = MENU_PAGE_ASPECT;
 		menu_sel = 1;
 	}

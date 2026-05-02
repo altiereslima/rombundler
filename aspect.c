@@ -20,7 +20,7 @@
 #endif
 
 static aspect_mode_t current_mode = ASPECT_CORE;
-static aspect_custom_t custom = {0, 0, 0, 0};
+static aspect_custom_t custom = {0, 0, 0, 0, 100};
 static char save_path[512] = {0};
 
 /* Gera o caminho do arquivo de aspecto: ./saves/<rom_basename>.aspect */
@@ -68,15 +68,25 @@ static void load_from_file(void)
 	fscanf(f, "off_y=%d\n", &custom.off_y);
 	fscanf(f, "adj_w=%d\n", &custom.adj_w);
 	fscanf(f, "adj_h=%d\n", &custom.adj_h);
+	int zoom_pct = 100;
+	if (fscanf(f, "zoom_pct=%d\n", &zoom_pct) == 1) {
+		if (zoom_pct < 10) zoom_pct = 10;
+		if (zoom_pct > 500) zoom_pct = 500;
+		custom.zoom_pct = zoom_pct;
+	}
 
 	fclose(f);
-	printf("Aspect: carregado %s (modo=%d)\n", save_path, current_mode);
+	printf("Aspect: carregado %s (modo=%d zoom_pct=%d)\n", save_path, current_mode, custom.zoom_pct);
 }
 
 void aspect_init(const char *rom_path)
 {
 	current_mode = ASPECT_CORE;
-	memset(&custom, 0, sizeof(custom));
+	custom.off_x = 0;
+	custom.off_y = 0;
+	custom.adj_w = 0;
+	custom.adj_h = 0;
+	custom.zoom_pct = 100;
 	make_save_path(rom_path);
 	load_from_file();
 }
@@ -96,6 +106,7 @@ void aspect_save(void)
 	fprintf(f, "off_y=%d\n", custom.off_y);
 	fprintf(f, "adj_w=%d\n", custom.adj_w);
 	fprintf(f, "adj_h=%d\n", custom.adj_h);
+	fprintf(f, "zoom_pct=%d\n", custom.zoom_pct);
 
 	fclose(f);
 }
@@ -122,18 +133,45 @@ void aspect_cycle(int dir)
 const char *aspect_mode_name(aspect_mode_t mode)
 {
 	switch (mode) {
-		case ASPECT_CORE:    return lang_get(STR_ASPECT_CORE);
-		case ASPECT_STRETCH: return lang_get(STR_ASPECT_STRETCH);
-		case ASPECT_4_3:     return lang_get(STR_ASPECT_4_3);
-		case ASPECT_16_9:    return lang_get(STR_ASPECT_16_9);
-		case ASPECT_CUSTOM:  return lang_get(STR_ASPECT_CUSTOM);
-		default:             return "???";
+		case ASPECT_CORE:          return lang_get(STR_ASPECT_CORE);
+		case ASPECT_STRETCH:       return lang_get(STR_ASPECT_STRETCH);
+		case ASPECT_4_3:           return lang_get(STR_ASPECT_4_3);
+		case ASPECT_16_9:          return lang_get(STR_ASPECT_16_9);
+		case ASPECT_CUSTOM:        return lang_get(STR_ASPECT_CUSTOM);
+		case ASPECT_ZOOM:    return lang_get(STR_ASPECT_ZOOM);
+		default:                   return "???";
 	}
 }
 
 aspect_viewport_t aspect_calc(int win_w, int win_h, int core_w, int core_h, float core_aspect)
 {
 	aspect_viewport_t vp = {0, 0, win_w, win_h};
+
+	if (current_mode == ASPECT_ZOOM) {
+		/* Calcula o viewport normal (Core) e aplica zoom + offset */
+		float ratio = core_aspect;
+		if (ratio <= 0.0f && core_w > 0 && core_h > 0)
+			ratio = (float)core_w / (float)core_h;
+		if (ratio <= 0.0f) ratio = 4.0f / 3.0f;
+
+		float win_ratio = (float)win_w / (float)win_h;
+		int base_w, base_h;
+
+		if (win_ratio > ratio) {
+			base_h = win_h;
+			base_w = (int)(win_h * ratio + 0.5f);
+		} else {
+			base_w = win_w;
+			base_h = (int)(win_w / ratio + 0.5f);
+		}
+
+		float factor = custom.zoom_pct / 100.0f;
+		vp.w = (int)(base_w * factor);
+		vp.h = (int)(base_h * factor);
+		vp.x = (win_w - vp.w) / 2 + custom.off_x;
+		vp.y = (win_h - vp.h) / 2 + custom.off_y;
+		return vp;
+	}
 
 	if (current_mode == ASPECT_STRETCH) {
 		/* Nada a fazer — já cobre toda a janela */
@@ -197,5 +235,21 @@ aspect_custom_t *aspect_get_custom(void)
 
 void aspect_custom_reset(void)
 {
-	memset(&custom, 0, sizeof(custom));
+	custom.off_x = 0;
+	custom.off_y = 0;
+	custom.adj_w = 0;
+	custom.adj_h = 0;
+	custom.zoom_pct = 100;
+}
+
+int aspect_zoom_pct(void)
+{
+	return custom.zoom_pct;
+}
+
+void aspect_zoom_delta(int delta)
+{
+	custom.zoom_pct += delta;
+	if (custom.zoom_pct < 10) custom.zoom_pct = 10;
+	if (custom.zoom_pct > 500) custom.zoom_pct = 500;
 }

@@ -133,6 +133,19 @@ static void apply_pending_overrides(void)
         apply_override(pending_overrides[i].key, pending_overrides[i].value);
 }
 
+static const char *find_pending_override_value(const char *key)
+{
+    if (!key || !key[0])
+        return NULL;
+
+    for (int i = 0; i < num_pending_overrides; i++) {
+        if (strcmp(pending_overrides[i].key, key) == 0)
+            return pending_overrides[i].value;
+    }
+
+    return NULL;
+}
+
 static bool is_option_value_allowed(const char *key, const char *value)
 {
     char normalized[OPT_MAX_VAL_LEN];
@@ -304,6 +317,9 @@ void opt_parse_v1_intl(const void *data)
     const struct retro_core_options_intl *intl =
         (const struct retro_core_options_intl *)data;
 
+    if (!intl || !intl->us)
+        return;
+
     /* Parse US English as base */
     parse_defs(intl->us);
     printf("[options] Parsed %d core options (v1 intl, us)\n", num_options);
@@ -401,9 +417,18 @@ bool get_option(const char *key, const char **value)
                 *value = options[i].values[options[i].selected];
                 return true;
             }
-            return false;
+            break;
         }
     }
+
+    {
+        const char *pending_value = find_pending_override_value(key);
+        if (pending_value && pending_value[0]) {
+            *value = pending_value;
+            return true;
+        }
+    }
+
     return false;
 }
 

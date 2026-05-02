@@ -3,7 +3,7 @@
  *
  * Mapeamento padrão: Xbox 360 (A=A, B=B, X=X, Y=Y).
  * Suporta remapeamento por jogo via remap.c.
- * Atalhos: ALT+ENTER = fullscreen, F1 = menu, BACK+START = menu (gamepad).
+ * Atalhos: ALT+ENTER/F11 = fullscreen, F1 = menu, BACK+START = menu (gamepad).
  */
 
 #define GLFW_INCLUDE_NONE
@@ -207,10 +207,13 @@ extern GLFWwindow *window;
 /* Debounce para atalhos (ALT+ENTER, F1, BACK+START) */
 static double hotkey_debounce = 0;
 #define HOTKEY_DELAY 0.3
+#define MENU_COMBO_HOLD 0.4
 static bool hotkey_alt_enter_prev = false;
+static bool hotkey_f11_prev = false;
 static bool hotkey_f1_prev = false;
 static bool hotkey_escape_prev = false;
-static bool hotkey_menu_combo_prev[MAX_PLAYERS] = { false };
+static double menu_combo_hold_start[MAX_PLAYERS] = { 0.0 };
+static bool menu_combo_triggered[MAX_PLAYERS] = { false };
 
 static bool hotkey_triggered(bool pressed, bool *prev_pressed)
 {
@@ -308,7 +311,11 @@ void input_poll(void) {
 	int i;
 	int port;
 	bool alt_enter_pressed;
-	bool menu_supported = video_menu_supported();
+	bool menu_supported;
+
+	if (!window) return;
+
+	menu_supported = video_menu_supported();
 
 	input_refresh_active_gamepads();
 
@@ -325,6 +332,14 @@ void input_poll(void) {
 		return; /* Não processa mais nada nesse frame */
 	}
 
+	/* F11 = alternar tela cheia (alternativa ao ALT+ENTER) */
+	if (hotkey_triggered(glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS,
+		&hotkey_f11_prev)) {
+		log_printf("input", "F11 hotkey triggered");
+		video_toggle_fullscreen();
+		return;
+	}
+
 	/* F1 = abrir/fechar menu */
 	if (menu_supported &&
 	    hotkey_triggered(glfwGetKey(window, GLFW_KEY_F1) == GLFW_PRESS,
@@ -334,11 +349,12 @@ void input_poll(void) {
 		return;
 	}
 
-	/* BACK+START no gamepad = abrir/fechar menu */
+	/* BACK+START no gamepad = abrir/fechar menu (requer segurar 0.4s) */
 	for (int port = 0; port < MAX_PLAYERS; port++) {
 		bool combo_pressed = false;
 		int jid = input_gamepad_jid_for_port(port);
 		GLFWgamepadstate pad;
+		double now = glfwGetTime();
 
 		if (jid >= 0 &&
 		    glfwGetGamepadState(jid, &pad)) {
@@ -347,11 +363,21 @@ void input_poll(void) {
 				pad.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS;
 		}
 
-		if (menu_supported &&
-		    hotkey_triggered(combo_pressed, &hotkey_menu_combo_prev[port])) {
-			log_printf("input", "BACK+START hotkey triggered on port %d", port);
-			menu_toggle();
-			return;
+		if (menu_supported && combo_pressed) {
+			if (!menu_combo_triggered[port] && menu_combo_hold_start[port] == 0.0)
+				menu_combo_hold_start[port] = now;
+			if (!menu_combo_triggered[port] &&
+			    now - menu_combo_hold_start[port] >= MENU_COMBO_HOLD &&
+			    now - hotkey_debounce >= HOTKEY_DELAY) {
+				hotkey_debounce = now;
+				menu_combo_triggered[port] = true;
+				log_printf("input", "BACK+START hotkey triggered on port %d (held %.2fs)", port, now - menu_combo_hold_start[port]);
+				menu_toggle();
+				return;
+			}
+		} else {
+			menu_combo_hold_start[port] = 0.0;
+			menu_combo_triggered[port] = false;
 		}
 	}
 
@@ -424,16 +450,26 @@ void input_poll(void) {
 			analog_state[port][RETRO_DEVICE_INDEX_ANALOG_RIGHT][RETRO_DEVICE_ID_ANALOG_X] = floatToAnalog(pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_X]);
 			analog_state[port][RETRO_DEVICE_INDEX_ANALOG_RIGHT][RETRO_DEVICE_ID_ANALOG_Y] = floatToAnalog(pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y]);
 
-			/* L2/R2 como gatilhos analógicos */
-			state[port][RETRO_DEVICE_ID_JOYPAD_L2] = pad.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] > 0.5f;
-			state[port][RETRO_DEVICE_ID_JOYPAD_R2] = pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.5f;
+			/* L2/R2: gatilhos analógicos com remap opcional para outro botão retro */
+			if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] > 0.5f)
+				state[port][remap_get_trigger_l2_target(port)] = 1;
+			if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.5f)
+				state[port][remap_get_trigger_r2_target(port)] = 1;
 
-			/* Analógico para D-pad */
-			if (g_cfg.map_analog_to_dpad) {
-				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_X] < -0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_LEFT] = 1;
+			/* Analógico para D-pad: modo por porta (-1=herda global, 0=off, 1=esq, 2=dir, 3=ambos) */
+			int adpad = remap_get_analog_dpad_mode(port);
+			if (adpad < 0) adpad = g_cfg.map_analog_to_dpad ? 1 : 0;
+			if (adpad == 1 || adpad == 3) {
+				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_X] < -0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_LEFT]  = 1;
 				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_X] >  0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_RIGHT] = 1;
-				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] < -0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_UP] = 1;
-				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] >  0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_DOWN] = 1;
+				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] < -0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_UP]    = 1;
+				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_Y] >  0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_DOWN]  = 1;
+			}
+			if (adpad == 2 || adpad == 3) {
+				if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_X] < -0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_LEFT]  = 1;
+				if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_X] >  0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_RIGHT] = 1;
+				if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y] < -0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_UP]    = 1;
+				if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y] >  0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_DOWN]  = 1;
 			}
 		}
 	}

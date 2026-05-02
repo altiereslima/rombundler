@@ -11,6 +11,13 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <string.h>
+#include <wchar.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dirent.h>
+#endif
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -96,6 +103,146 @@ static bool str_in_list(const char *value, const char *const *values, int count)
 	return false;
 }
 
+static bool str_has_suffix_ci(const char *value, const char *suffix)
+{
+	size_t value_len = 0;
+	size_t suffix_len = 0;
+
+	if (!value || !suffix)
+		return false;
+
+	value_len = strlen(value);
+	suffix_len = strlen(suffix);
+
+	if (value_len < suffix_len)
+		return false;
+
+#if defined(_WIN32)
+	return _stricmp(value + value_len - suffix_len, suffix) == 0;
+#else
+	return strcasecmp(value + value_len - suffix_len, suffix) == 0;
+#endif
+}
+
+static int pcsx2_bios_priority(const char *name)
+{
+	/* Higher score = preferred. Names starting with "SCPH" without spaces
+	 * are the canonical PS2 BIOS naming and best matched by LRPS2's
+	 * BIOS database. Names with spaces (e.g. "PS2 Bios 30004R V6 Pal.bin")
+	 * may not validate and are deprioritized. */
+	int score = 0;
+
+	if (!name)
+		return 0;
+
+	if ((name[0] == 'S' || name[0] == 's') &&
+	    (name[1] == 'C' || name[1] == 'c') &&
+	    (name[2] == 'P' || name[2] == 'p') &&
+	    (name[3] == 'H' || name[3] == 'h'))
+		score += 100;
+
+	if (strchr(name, ' ') == NULL)
+		score += 10;
+
+	/* Prefer USA/JAP NTSC BIOS for compatibility */
+	if (strstr(name, "39001") || strstr(name, "39000") ||
+	    strstr(name, "70012") || strstr(name, "77001"))
+		score += 5;
+
+	return score;
+}
+
+static bool detect_pcsx2_bios(char *out, size_t out_size)
+{
+	int best_score = -1;
+	char best[OPT_MAX_VAL_LEN] = {0};
+
+	if (!out || out_size == 0)
+		return false;
+
+	out[0] = '\0';
+
+#if defined(_WIN32)
+	{
+		wchar_t pattern[MAX_PATH];
+		WIN32_FIND_DATAW data;
+		HANDLE handle = INVALID_HANDLE_VALUE;
+		char utf8_name[OPT_MAX_VAL_LEN];
+
+		if (MultiByteToWideChar(CP_UTF8, 0, "./system/pcsx2/bios/*.bin", -1,
+			pattern, (int)(sizeof(pattern) / sizeof(pattern[0]))) <= 0)
+			return false;
+
+		handle = FindFirstFileW(pattern, &data);
+		if (handle == INVALID_HANDLE_VALUE)
+			return false;
+
+		do {
+			int score = 0;
+
+			if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+				continue;
+
+			if (WideCharToMultiByte(CP_UTF8, 0, data.cFileName, -1,
+				utf8_name, (int)sizeof(utf8_name), NULL, NULL) <= 0)
+				continue;
+
+			if (!str_has_suffix_ci(utf8_name, ".bin"))
+				continue;
+
+			/* BIOS real tem >= 1 MB; pula EROM, ROM1, ROM2 */
+			if (data.nFileSizeLow < 1024 * 1024)
+				continue;
+
+			score = pcsx2_bios_priority(utf8_name);
+			if (score > best_score) {
+				best_score = score;
+				snprintf(best, sizeof(best), "%s", utf8_name);
+			}
+		} while (FindNextFileW(handle, &data));
+
+		FindClose(handle);
+
+		if (best[0]) {
+			snprintf(out, out_size, "%s", best);
+			return true;
+		}
+		return false;
+	}
+#else
+	{
+		DIR *dir = opendir("./system/pcsx2/bios");
+		struct dirent *entry = NULL;
+
+		if (!dir)
+			return false;
+
+		while ((entry = readdir(dir)) != NULL) {
+			int score = 0;
+
+			if (entry->d_name[0] == '.')
+				continue;
+			if (!str_has_suffix_ci(entry->d_name, ".bin"))
+				continue;
+
+			score = pcsx2_bios_priority(entry->d_name);
+			if (score > best_score) {
+				best_score = score;
+				snprintf(best, sizeof(best), "%s", entry->d_name);
+			}
+		}
+
+		closedir(dir);
+
+		if (best[0]) {
+			snprintf(out, out_size, "%s", best);
+			return true;
+		}
+		return false;
+	}
+#endif
+}
+
 static bool core_self_manages_hw_binding(void)
 {
 	const char *rdp_plugin = NULL;
@@ -121,8 +268,131 @@ static void log_effective_option(const char *key)
 		log_printf("app", "effective option %s=(unavailable)", key);
 }
 
+static bool file_exists_for_copy(const char *path)
+{
+	FILE *f = NULL;
+
+	if (!path || !*path)
+		return false;
+
+	f = fopen(path, "rb");
+	if (!f)
+		return false;
+
+	fclose(f);
+	return true;
+}
+
+static bool copy_file_simple(const char *src, const char *dst)
+{
+	FILE *in = NULL;
+	FILE *out = NULL;
+	unsigned char buffer[8192];
+	size_t read_count = 0;
+	bool ok = false;
+
+	if (!src || !dst)
+		return false;
+
+	in = fopen(src, "rb");
+	if (!in)
+		return false;
+
+	out = fopen(dst, "wb");
+	if (!out) {
+		fclose(in);
+		return false;
+	}
+
+	while ((read_count = fread(buffer, 1, sizeof(buffer), in)) > 0) {
+		if (fwrite(buffer, 1, read_count, out) != read_count)
+			goto cleanup;
+	}
+
+	if (ferror(in))
+		goto cleanup;
+
+	ok = true;
+
+cleanup:
+	fclose(out);
+	fclose(in);
+	return ok;
+}
+
+static void mirror_file_if_missing(const char *dst,
+	const char *const *sources,
+	size_t source_count,
+	const char *label)
+{
+	size_t i = 0;
+
+	if (!dst || !sources || source_count == 0)
+		return;
+
+	if (file_exists_for_copy(dst)) {
+		log_printf("app", "%s already present at %s", label ? label : "file", dst);
+		return;
+	}
+
+	for (i = 0; i < source_count; i++) {
+		if (!sources[i] || !file_exists_for_copy(sources[i]))
+			continue;
+
+		if (copy_file_simple(sources[i], dst)) {
+			log_printf("app", "mirrored %s from %s to %s",
+				label ? label : "file",
+				sources[i],
+				dst);
+			return;
+		}
+
+		log_printf("app", "failed to mirror %s from %s to %s",
+			label ? label : "file",
+			sources[i],
+			dst);
+	}
+
+	log_printf("app", "no source found to mirror %s into %s",
+		label ? label : "file",
+		dst);
+}
+
+static void prepare_puae_support_files(void)
+{
+	static const char *const whdload_key_sources[] = {
+		"./system/WHDLoad.key",
+		"./WHDLoad/L/WHDLoad.key",
+		"./key/WHDLoad.key"
+	};
+
+	if (!core_path_contains("puae"))
+		return;
+
+	mirror_file_if_missing("./WHDLoad.key",
+		whdload_key_sources,
+		sizeof(whdload_key_sources) / sizeof(whdload_key_sources[0]),
+		"WHDLoad.key");
+}
+
 static void apply_core_fallback_overrides(bool options_loaded)
 {
+	static const char *const parallel_n64_vulkan_gfx_candidates[] = {
+		"parallel"
+	};
+	static const char *const parallel_n64_gl_gfx_candidates[] = {
+		"glide64",
+		"gln64",
+		"rice"
+	};
+	static const char *const parallel_n64_software_gfx_candidates[] = {
+		"angrylion"
+	};
+	static const char *const parallel_n64_vulkan_rsp_candidates[] = {
+		"cxd4",
+		"parallel",
+		"hle"
+	};
 	static const char *const mupen_vulkan_rdp_candidates[] = {
 		"parallel"
 	};
@@ -169,6 +439,14 @@ static void apply_core_fallback_overrides(bool options_loaded)
 		"5",
 		"0"
 	};
+	const int parallel_n64_vulkan_gfx_count =
+		(int)(sizeof(parallel_n64_vulkan_gfx_candidates) / sizeof(parallel_n64_vulkan_gfx_candidates[0]));
+	const int parallel_n64_gl_gfx_count =
+		(int)(sizeof(parallel_n64_gl_gfx_candidates) / sizeof(parallel_n64_gl_gfx_candidates[0]));
+	const int parallel_n64_software_gfx_count =
+		(int)(sizeof(parallel_n64_software_gfx_candidates) / sizeof(parallel_n64_software_gfx_candidates[0]));
+	const int parallel_n64_vulkan_rsp_count =
+		(int)(sizeof(parallel_n64_vulkan_rsp_candidates) / sizeof(parallel_n64_vulkan_rsp_candidates[0]));
 	const int vulkan_rdp_count =
 		(int)(sizeof(mupen_vulkan_rdp_candidates) / sizeof(mupen_vulkan_rdp_candidates[0]));
 	const int software_rdp_count =
@@ -202,13 +480,106 @@ static void apply_core_fallback_overrides(bool options_loaded)
 	bool sanitized_loaded_options = false;
 	bool preset_applied = false;
 
+	if (core_path_contains("pcsx2")) {
+		log_printf("app", "PCSX2 detected — using system/pcsx2 config (portable mode)");
+		log_effective_option("pcsx2_bios");
+		return;
+	}
+
+	if (core_path_contains("parallel_n64")) {
+		const char *selected_gfx = NULL;
+		const char *selected_parallel_rsp = NULL;
+		const char *current_gfx = NULL;
+		const char *current_parallel_rsp = NULL;
+		bool gfx_ok = false;
+		bool keep_loaded_gfx = false;
+		bool keep_loaded_parallel_rsp = false;
+
+		if (options_loaded &&
+			get_option("parallel-n64-gfxplugin", &current_gfx) &&
+			current_gfx &&
+			opt_value_allowed("parallel-n64-gfxplugin", current_gfx) &&
+			((prefer_vulkan &&
+			  str_in_list(current_gfx, parallel_n64_vulkan_gfx_candidates, parallel_n64_vulkan_gfx_count)) ||
+			 (!prefer_vulkan &&
+			  (str_in_list(current_gfx, parallel_n64_gl_gfx_candidates, parallel_n64_gl_gfx_count) ||
+			   str_in_list(current_gfx, parallel_n64_software_gfx_candidates, parallel_n64_software_gfx_count))))) {
+			selected_gfx = current_gfx;
+			keep_loaded_gfx = true;
+		}
+
+		if (!keep_loaded_gfx) {
+			if (prefer_vulkan) {
+				gfx_ok = opt_override_first_available("parallel-n64-gfxplugin",
+					parallel_n64_vulkan_gfx_candidates,
+					parallel_n64_vulkan_gfx_count,
+					&selected_gfx);
+			}
+
+			if (!gfx_ok) {
+				gfx_ok = opt_override_first_available("parallel-n64-gfxplugin",
+					parallel_n64_gl_gfx_candidates,
+					parallel_n64_gl_gfx_count,
+					&selected_gfx);
+			}
+
+			if (!gfx_ok) {
+				gfx_ok = opt_override_first_available("parallel-n64-gfxplugin",
+					parallel_n64_software_gfx_candidates,
+					parallel_n64_software_gfx_count,
+					&selected_gfx);
+			}
+
+			sanitized_loaded_options = options_loaded;
+		}
+
+		if (selected_gfx && strcmp(selected_gfx, "parallel") == 0) {
+			if (options_loaded &&
+				get_option("parallel-n64-rspplugin", &current_parallel_rsp) &&
+				current_parallel_rsp &&
+				str_in_list(current_parallel_rsp,
+					parallel_n64_vulkan_rsp_candidates,
+					parallel_n64_vulkan_rsp_count)) {
+				selected_parallel_rsp = current_parallel_rsp;
+				keep_loaded_parallel_rsp = true;
+			}
+
+			if (!keep_loaded_parallel_rsp) {
+				rsp_ok = opt_override_first_available("parallel-n64-rspplugin",
+					parallel_n64_vulkan_rsp_candidates,
+					parallel_n64_vulkan_rsp_count,
+					&selected_parallel_rsp);
+			}
+		}
+
+		if (!keep_loaded_parallel_rsp && options_loaded &&
+			selected_gfx && strcmp(selected_gfx, "parallel") == 0)
+			sanitized_loaded_options = true;
+
+		if (sanitized_loaded_options) {
+			log_printf("app",
+				"sanitized unsupported parallel-n64 options gfx=%s rsp=%s",
+				selected_gfx ? selected_gfx : "unchanged",
+				selected_parallel_rsp ? selected_parallel_rsp : "unchanged");
+		} else if (!options_loaded) {
+			log_printf("app",
+				"applied adaptive parallel-n64 fallback gfx=%s rsp=%s",
+				gfx_ok && selected_gfx ? selected_gfx : "unchanged",
+				rsp_ok && selected_parallel_rsp ? selected_parallel_rsp : "unchanged");
+		} else {
+			log_printf("app",
+				"kept loaded parallel-n64 options gfx=%s rsp=%s",
+				selected_gfx ? selected_gfx : "unchanged",
+				selected_parallel_rsp ? selected_parallel_rsp : "unchanged");
+		}
+
+		log_effective_option("parallel-n64-gfxplugin");
+		log_effective_option("parallel-n64-rspplugin");
+		return;
+	}
+
 	if (!core_path_contains("mupen64plus_next"))
 		return;
-
-	if (prefer_vulkan) {
-		prefer_vulkan = false;
-		log_printf("app", "forcing OpenGL for mupen64plus_next (Vulkan disabled)");
-	}
 
 	if (options_loaded &&
 		get_option("mupen64plus-rdp-plugin", &current_rdp) &&
@@ -417,14 +788,46 @@ int main(int argc, char *argv[]) {
 
 	glfwSetJoystickCallback(joystick_callback);
 
-	core_load(g_cfg.core);
 	log_printf("app", "loading options.ini");
 	options_loaded = (opt_load("./options.ini") >= 0);
 	if (!options_loaded)
 		log_printf("app", "options.ini not found or unreadable, continuing with core defaults");
 	else
 		log_printf("app", "options.ini parsed");
+
+	prepare_puae_support_files();
+
+	/* PCSX2 (LRPS2) reads pcsx2_bios during retro_init(), so any auto
+	 * detection MUST be staged as a pending override BEFORE core_load.
+	 * Otherwise the core caches an empty sel_bios_path and refuses to
+	 * load the BIOS later (Failed to load BIOS / empty NVRAM/MEC paths). */
+	if (core_path_contains("pcsx2")) {
+		char detected_bios[OPT_MAX_VAL_LEN] = {0};
+		const char *pending_bios = NULL;
+		bool have_pending_bios = get_option("pcsx2_bios", &pending_bios) &&
+			pending_bios && pending_bios[0];
+
+		if (!have_pending_bios) {
+			if (detect_pcsx2_bios(detected_bios, sizeof(detected_bios))) {
+				opt_override("pcsx2_bios", detected_bios);
+				log_printf("app", "pre-init: auto-selected pcsx2_bios=%s", detected_bios);
+			} else {
+				log_printf("app", "pre-init: no PS2 BIOS .bin found in ./system/pcsx2/bios");
+			}
+		} else {
+			log_printf("app", "pre-init: keeping pcsx2_bios=%s from options.ini",
+				pending_bios);
+		}
+	}
+
+	core_load(g_cfg.core);
 	apply_core_fallback_overrides(options_loaded);
+	if (strstr(g_cfg.core, "puae")) {
+		log_effective_option("puae_use_whdload");
+		log_effective_option("puae_use_whdload_prefs");
+		log_effective_option("puae_use_boot_hd");
+		log_effective_option("puae_model_hd");
+	}
 
 	core_load_game(g_cfg.rom);
 	menu_supported = video_menu_supported();
@@ -504,6 +907,7 @@ int main(int argc, char *argv[]) {
 
 			video_gl_unbind();
 			core_run();
+			core_message_update();
 			if (!self_managed_hw_binding)
 				video_gl_rebind();
 			video_render();
@@ -519,6 +923,7 @@ int main(int argc, char *argv[]) {
 	/* Salva tudo antes de sair */
 	persist_runtime_config();
 	srm_save();
+	aspect_save();
 	remap_save();
 	opt_save("./options.ini");
 

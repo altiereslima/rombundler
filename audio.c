@@ -8,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #ifdef __APPLE__
 #include <OpenAL/al.h>
@@ -17,7 +18,7 @@
 #include <AL/alc.h>
 #endif
 
-#define BUFSIZE 1024*8
+#define BUFSIZE 1024*4
 #define NUMBUFFERS 4
 
 #ifndef MIN
@@ -26,6 +27,19 @@
 
 #include "audio.h"
 #include "utils.h"
+#include "libretro.h"
+
+extern struct retro_audio_callback audio_cb;
+extern bool audio_cb_active;
+
+/* Bytes recebidos do core via audio_sample_batch durante um pull.
+ * Usado como sinal de progresso para sair do loop quando o core para
+ * de produzir áudio. Acessado apenas da main thread. */
+static volatile size_t pull_bytes_received = 0;
+
+/* ── Dedicated audio thread for pull-model cores ── */
+static pthread_t audio_thread;
+static volatile bool audio_thread_running = false;
 
 typedef struct al
 {
@@ -48,7 +62,7 @@ typedef struct al
 al_t* al = NULL;
 
 /* Volume state */
-static int  current_volume = 100;   /* 0-100 */
+static int  current_volume = 100;   /* 0-200 */
 static bool current_mute   = false;
 static bool nonblocking    = false;
 
@@ -74,6 +88,41 @@ static bool unqueue_buffers()
 	alSourceUnqueueBuffers(al->source, val, &al->res_buf[al->res_ptr]);
 	al->res_ptr += val;
 	return true;
+}
+
+void audio_callback_pull(void)
+{
+	if (!audio_cb_active || !audio_cb.callback || !al)
+		return;
+
+	/* Libera buffers ja tocados de volta para o pool antes de pedir mais audio */
+	unqueue_buffers();
+
+	const size_t target_bytes = (size_t)BUFSIZE * 2;
+	int max_iter = 1024;
+	int stale = 0;
+
+	pull_bytes_received = 0;
+	while (pull_bytes_received < target_bytes && max_iter-- > 0) {
+		ALint queued = 0, processed = 0;
+		alGetSourcei(al->source, AL_BUFFERS_QUEUED, &queued);
+		alGetSourcei(al->source, AL_BUFFERS_PROCESSED, &processed);
+
+		if ((queued - processed) >= NUMBUFFERS && processed == 0)
+			break;
+
+		size_t before = pull_bytes_received;
+		audio_cb.callback();
+
+		if (pull_bytes_received == before) {
+			if (++stale >= 4)
+				break;
+		} else {
+			stale = 0;
+		}
+
+		unqueue_buffers();
+	}
 }
 
 static bool get_buffer(ALuint *buffer)
@@ -237,6 +286,8 @@ size_t audio_sample_batch(const int16_t *data, size_t frames) {
 	if (!al || !data || frames == 0)
 		return 0;
 
+	pull_bytes_received += frames * sizeof(int16_t) * 2;
+
 	if (al->needs_resample) {
 		size_t out_frames = 0;
 		size_t max_out_frames = (frames * (size_t)al->rate) / (size_t)al->input_rate + 8;
@@ -281,7 +332,7 @@ size_t audio_sample_batch(const int16_t *data, size_t frames) {
 
 void audio_set_volume(int percent) {
 	if (percent < 0)   percent = 0;
-	if (percent > 100) percent = 100;
+	if (percent > 200) percent = 200;
 	current_volume = percent;
 	apply_gain();
 }
@@ -301,4 +352,62 @@ bool audio_get_mute(void) {
 
 void audio_set_nonblocking(bool enabled) {
 	nonblocking = enabled;
+}
+
+/* ── Dedicated audio thread ── */
+
+static void *audio_thread_func(void *arg)
+{
+	(void)arg;
+
+	while (audio_thread_running) {
+		if (!audio_cb_active || !audio_cb.callback || !al) {
+			/* Core not ready yet or callback cleared — wait a bit */
+			struct timespec ts = {0, 1000000}; /* 1 ms */
+			nanosleep(&ts, NULL);
+			continue;
+		}
+
+		/* Call the core's audio callback.
+		 * The core will call audio_sample_batch -> audio_write -> get_buffer.
+		 * When nonblocking==false (normal play), get_buffer blocks until an
+		 * OpenAL buffer is free, naturally pacing this loop to the hardware
+		 * audio rate (~48000 Hz / BUFSIZE).  This is exactly how RetroArch
+		 * paces its audio thread. */
+		audio_cb.callback();
+
+		/* During fast-forward, nonblocking==true and get_buffer never blocks.
+		 * Without a sleep the thread would spin at 100% CPU. */
+		if (nonblocking) {
+			struct timespec ts = {0, 1000000}; /* 1 ms */
+			nanosleep(&ts, NULL);
+		}
+	}
+
+	return NULL;
+}
+
+void audio_start_thread(void)
+{
+	if (audio_thread_running)
+		return;
+
+	audio_thread_running = true;
+	if (pthread_create(&audio_thread, NULL, audio_thread_func, NULL) != 0) {
+		audio_thread_running = false;
+		log_printf("audio", "failed to create audio thread");
+		return;
+	}
+
+	log_printf("audio", "audio thread started");
+}
+
+void audio_stop_thread(void)
+{
+	if (!audio_thread_running)
+		return;
+
+	audio_thread_running = false;
+	pthread_join(audio_thread, NULL);
+	log_printf("audio", "audio thread stopped");
 }
