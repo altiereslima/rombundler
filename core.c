@@ -1920,6 +1920,11 @@ void core_load_game(const char *filename)
 	if (!core.retro_load_game(&info))
 		die("The core failed to load the content.");
 
+	core.retro_set_controller_port_device(0, g_cfg.port0 ? g_cfg.port0 : RETRO_DEVICE_JOYPAD);
+	core.retro_set_controller_port_device(1, g_cfg.port1 ? g_cfg.port1 : RETRO_DEVICE_JOYPAD);
+	core.retro_set_controller_port_device(2, g_cfg.port2 ? g_cfg.port2 : RETRO_DEVICE_JOYPAD);
+	core.retro_set_controller_port_device(3, g_cfg.port3 ? g_cfg.port3 : RETRO_DEVICE_JOYPAD);
+
 	core.retro_get_system_av_info(&av);
 	log_printf("core",
 		"AV info: base=%ux%u max=%ux%u aspect=%.4f fps=%.4f sample_rate=%.2f",
@@ -1940,11 +1945,6 @@ void core_load_game(const char *filename)
 		audio_cb.set_state(true);
 		audio_start_thread();
 	}
-
-	core.retro_set_controller_port_device(0, g_cfg.port0 ? g_cfg.port0 : RETRO_DEVICE_JOYPAD);
-	core.retro_set_controller_port_device(1, g_cfg.port1 ? g_cfg.port1 : RETRO_DEVICE_JOYPAD);
-	core.retro_set_controller_port_device(2, g_cfg.port2 ? g_cfg.port2 : RETRO_DEVICE_JOYPAD);
-	core.retro_set_controller_port_device(3, g_cfg.port3 ? g_cfg.port3 : RETRO_DEVICE_JOYPAD);
 
 	return;
 }
