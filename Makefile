@@ -1,14 +1,20 @@
 TARGET := rombundler
 VERSION ?= devel
-UNAME_S := $(shell uname -s 2>NUL)
+ifeq ($(OS),Windows_NT)
+	UNAME_S := Windows_NT
+else
+	UNAME_S := $(shell uname -s 2>/dev/null)
+endif
 
 ifeq ($(OS),Windows_NT) # win
 	TARGET := rombundler.exe
+	CC := gcc
 	CFLAGS += -IC:/glfw-3.3.4.bin.WIN64/include -IC:/openal-soft-1.21.0-bin/include
 	LDFLAGS += -L./lib -L"C:\glfw-3.3.4.bin.WIN64/lib-mingw-w64" -L"C:\openal-soft-1.21.0-bin/libs/Win64" -static -lglfw3 -lopengl32 -lvulkan-1 -lgdi32 -luser32 -lkernel32 -lshell32 -lwinmm -lOpenAL32 -mwindows -static-libgcc -static-libstdc++
 	OS ?= Windows
 else ifneq ($(findstring MINGW,$(UNAME_S)),) # win
 	TARGET := rombundler.exe
+	CC := gcc
 	CFLAGS += -IC:/glfw-3.3.4.bin.WIN64/include -IC:/openal-soft-1.21.0-bin/include
 	LDFLAGS += -L./lib -L"C:\glfw-3.3.4.bin.WIN64/lib-mingw-w64" -L"C:\openal-soft-1.21.0-bin/libs/Win64" -static -lglfw3 -lopengl32 -lvulkan-1 -lgdi32 -luser32 -lkernel32 -lshell32 -lwinmm -lOpenAL32 -mwindows -static-libgcc -static-libstdc++
 	OS ?= Windows

@@ -194,6 +194,17 @@ static int input_gamepad_jid_for_port(int port)
 		return -1;
 	return active_gamepads[port];
 }
+
+static bool input_core_uses_native_analog(void)
+{
+	if (!g_cfg.core)
+		return false;
+
+	return strstr(g_cfg.core, "mupen64plus") != NULL ||
+	       strstr(g_cfg.core, "parallel_n64") != NULL ||
+	       strstr(g_cfg.core, "parallel-n64") != NULL;
+}
+
 static bool ff_active = false;
 static bool ff_active_prev = false;
 static bool mouse_capture_active = false;
@@ -458,7 +469,8 @@ void input_poll(void) {
 
 			/* Analógico para D-pad: modo por porta (-1=herda global, 0=off, 1=esq, 2=dir, 3=ambos) */
 			int adpad = remap_get_analog_dpad_mode(port);
-			if (adpad < 0) adpad = g_cfg.map_analog_to_dpad ? 1 : 0;
+			if (adpad < 0)
+				adpad = g_cfg.map_analog_to_dpad && !input_core_uses_native_analog() ? 1 : 0;
 			if (adpad == 1 || adpad == 3) {
 				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_X] < -0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_LEFT]  = 1;
 				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_X] >  0.5f) state[port][RETRO_DEVICE_ID_JOYPAD_RIGHT] = 1;
