@@ -23,6 +23,8 @@ typedef struct
     int ff_button;
     int volume;
     bool mute;
+    const char* input_profile;   /* perfil de fallback de controle (auto/generic/...) */
+    const char* game_profile;    /* perfil manual por jogo (none/<nome>) */
 } config;
 
 void cfg_defaults(config* c);

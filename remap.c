@@ -1,17 +1,24 @@
 /*
- * remap.c — Sistema de remapeamento de controle por jogo.
+ * remap.c — Remapeamento de controle por jogo (modelo unificado).
  *
- * Salva/carrega mapeamentos individuais por ROM em ./saves/<rom>.remap.ini,
- * ao lado dos ajustes de aspecto por jogo. Suporta todas as 4 portas.
+ * Cada botão RetroPad (0..15) aponta para UM código físico: um botão GLFW
+ * (0..LAST), um gatilho analógico (REMAP_PHYS_LT/RT) ou nada (REMAP_PHYS_NONE).
+ * Isso permite mapear qualquer botão emulado para qualquer entrada física,
+ * inclusive os gatilhos — e vice-versa.
  *
- * Formato do arquivo:
+ * Salva em ./saves/<rom>.remap.ini. Formato v2:
+ *   [meta]
+ *   version = 2
  *   [port0]
- *   button_0 = 0    ; RetroPad B      → GLFW button A
- *   button_3 = 7    ; RetroPad Start  → GLFW button Start
- *   button_8 = 1    ; RetroPad A      → GLFW button B
+ *   button_0 = 0      ; RetroPad B  -> GLFW A
+ *   button_12 = 256   ; RetroPad L2 -> gatilho LT (REMAP_PHYS_LT)
+ *   analog_dpad = 1
  *   ...
- *   [port1]
- *   ...
+ *
+ * Arquivos antigos (sem version, ou version 1) são migrados ao carregar:
+ * os antigos campos trigger_l2/trigger_r2 e os valores inertes de button_12/13
+ * são convertidos para o modelo unificado, preservando o comportamento sentido
+ * pelo usuário (LT->L2, RT->R2 por padrão).
  */
 
 #include <stdio.h>
@@ -34,18 +41,25 @@
 #include "ini.h"
 #include "libretro.h"
 
-/* Tabela de remap: [porta][botão retro] = botão GLFW */
+#define REMAP_FORMAT_VERSION 2
+#define LEGACY_TRIGGER_UNSET 0xFFFFu
+
+/* Tabela de remap: [porta][botão retro] = código físico */
 static unsigned remap_table[REMAP_MAX_PORTS][REMAP_MAX_BUTTONS];
-/* Gatilhos L2/R2 → retro button target (padrão: L2=12, R2=13) */
-static unsigned trigger_l2_target[REMAP_MAX_PORTS];
-static unsigned trigger_r2_target[REMAP_MAX_PORTS];
 /* Modo analógico→dpad por porta: -1=herda global, 0=off, 1=esq, 2=dir, 3=ambos */
 static int port_analog_dpad[REMAP_MAX_PORTS];
+
+/* Estado de carregamento / migração */
+static int      loaded_version = REMAP_FORMAT_VERSION;
+static unsigned legacy_trigger_l2[REMAP_MAX_PORTS];
+static unsigned legacy_trigger_r2[REMAP_MAX_PORTS];
+
 static char remap_filepath[512] = {0};
 static char legacy_remap_filepath[512] = {0};
 static bool remap_loaded = false;
 
-/* Mapeamento padrão RetroPad -> GLFW Gamepad, seguindo a ordem oficial libretro. */
+/* Mapeamento padrão RetroPad -> físico, na ordem oficial libretro.
+ * L2/R2 apontam para os gatilhos analógicos por padrão. */
 static const unsigned default_map[REMAP_MAX_BUTTONS] = {
 	[RETRO_DEVICE_ID_JOYPAD_B]      = GLFW_GAMEPAD_BUTTON_A,
 	[RETRO_DEVICE_ID_JOYPAD_Y]      = GLFW_GAMEPAD_BUTTON_X,
@@ -59,8 +73,8 @@ static const unsigned default_map[REMAP_MAX_BUTTONS] = {
 	[RETRO_DEVICE_ID_JOYPAD_X]      = GLFW_GAMEPAD_BUTTON_Y,
 	[RETRO_DEVICE_ID_JOYPAD_L]      = GLFW_GAMEPAD_BUTTON_LEFT_BUMPER,
 	[RETRO_DEVICE_ID_JOYPAD_R]      = GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER,
-	[RETRO_DEVICE_ID_JOYPAD_L2]     = 0, /* eixo, não botão */
-	[RETRO_DEVICE_ID_JOYPAD_R2]     = 0, /* eixo, não botão */
+	[RETRO_DEVICE_ID_JOYPAD_L2]     = REMAP_PHYS_LT,
+	[RETRO_DEVICE_ID_JOYPAD_R2]     = REMAP_PHYS_RT,
 	[RETRO_DEVICE_ID_JOYPAD_L3]     = GLFW_GAMEPAD_BUTTON_LEFT_THUMB,
 	[RETRO_DEVICE_ID_JOYPAD_R3]     = GLFW_GAMEPAD_BUTTON_RIGHT_THUMB,
 };
@@ -68,19 +82,16 @@ static const unsigned default_map[REMAP_MAX_BUTTONS] = {
 static bool remap_has_custom_mappings(void)
 {
 	for (int port = 0; port < REMAP_MAX_PORTS; port++) {
-		for (int i = 0; i < REMAP_MAX_BUTTONS; i++) {
+		for (int i = 0; i < REMAP_MAX_BUTTONS; i++)
 			if (remap_table[port][i] != default_map[i])
 				return true;
-		}
-		if (trigger_l2_target[port] != RETRO_DEVICE_ID_JOYPAD_L2) return true;
-		if (trigger_r2_target[port] != RETRO_DEVICE_ID_JOYPAD_R2) return true;
-		if (port_analog_dpad[port] >= 0) return true;
+		if (port_analog_dpad[port] >= 0)
+			return true;
 	}
-
 	return false;
 }
 
-/* Gera os caminhos novo e legado do remap por jogo. */
+/* Gera os caminhos novo (./saves) e legado (ao lado da ROM). */
 static void build_remap_path(const char *rom_path)
 {
 	if (!rom_path || !rom_path[0]) {
@@ -89,7 +100,6 @@ static void build_remap_path(const char *rom_path)
 		return;
 	}
 
-	/* Caminho legado: ao lado da ROM */
 	strncpy(legacy_remap_filepath, rom_path, sizeof(legacy_remap_filepath) - 20);
 	legacy_remap_filepath[sizeof(legacy_remap_filepath) - 20] = '\0';
 	char *legacy_dot = strrchr(legacy_remap_filepath, '.');
@@ -97,14 +107,10 @@ static void build_remap_path(const char *rom_path)
 		*legacy_dot = '\0';
 	strcat(legacy_remap_filepath, ".remap.ini");
 
-	/* Encontra apenas o basename para salvar em ./saves */
 	const char *base = rom_path;
-	const char *p = rom_path;
-	while (*p) {
+	for (const char *p = rom_path; *p; p++)
 		if (*p == '/' || *p == '\\')
 			base = p + 1;
-		p++;
-	}
 
 	char name[256];
 	strncpy(name, base, sizeof(name) - 1);
@@ -117,28 +123,32 @@ static void build_remap_path(const char *rom_path)
 	snprintf(remap_filepath, sizeof(remap_filepath), "./saves/%s.remap.ini", name);
 }
 
-/* Callback do parser INI */
 static int remap_ini_handler(void *user, const char *section,
                              const char *name, const char *value)
 {
 	(void)user;
 
-	/* Determina a porta pela seção */
+	if (strcmp(section, "meta") == 0) {
+		if (strcmp(name, "version") == 0)
+			loaded_version = atoi(value);
+		return 1;
+	}
+
 	int port = -1;
 	if (sscanf(section, "port%d", &port) != 1 || port < 0 || port >= REMAP_MAX_PORTS)
 		return 1;
 
-	/* Campos especiais de trigger e analógico */
+	/* Campos legados (v1) — guardados para migração */
 	if (strcmp(name, "trigger_l2") == 0) {
 		int v = atoi(value);
 		if (v >= 0 && v < REMAP_MAX_BUTTONS)
-			trigger_l2_target[port] = (unsigned)v;
+			legacy_trigger_l2[port] = (unsigned)v;
 		return 1;
 	}
 	if (strcmp(name, "trigger_r2") == 0) {
 		int v = atoi(value);
 		if (v >= 0 && v < REMAP_MAX_BUTTONS)
-			trigger_r2_target[port] = (unsigned)v;
+			legacy_trigger_r2[port] = (unsigned)v;
 		return 1;
 	}
 	if (strcmp(name, "analog_dpad") == 0) {
@@ -148,22 +158,46 @@ static int remap_ini_handler(void *user, const char *section,
 		return 1;
 	}
 
-	/* Determina o botão pelo nome */
 	int btn_id = -1;
-	if (sscanf(name, "button_%d", &btn_id) != 1 || btn_id < 0 || btn_id >= REMAP_MAX_BUTTONS)
+	if (sscanf(name, "button_%d", &btn_id) != 1 ||
+	    btn_id < 0 || btn_id >= REMAP_MAX_BUTTONS)
 		return 1;
 
-	remap_table[port][btn_id] = (unsigned)atoi(value);
+	remap_table[port][btn_id] = (unsigned)strtoul(value, NULL, 10);
 	return 1;
+}
+
+/* Converte um arquivo v1 (modelo de "trigger target" separado) para o modelo
+ * unificado. Em v1, button_12/13 (L2/R2) eram inertes e o gatilho físico LT/RT
+ * ia para trigger_l2/r2 (padrão L2/R2). */
+static void remap_migrate_legacy_v1(void)
+{
+	for (int port = 0; port < REMAP_MAX_PORTS; port++) {
+		/* Valores antigos de L2/R2 não tinham efeito → restaura gatilhos. */
+		remap_table[port][RETRO_DEVICE_ID_JOYPAD_L2] = REMAP_PHYS_LT;
+		remap_table[port][RETRO_DEVICE_ID_JOYPAD_R2] = REMAP_PHYS_RT;
+
+		unsigned tl = legacy_trigger_l2[port];
+		if (tl != LEGACY_TRIGGER_UNSET && tl < REMAP_MAX_BUTTONS &&
+		    tl != RETRO_DEVICE_ID_JOYPAD_L2) {
+			remap_table[port][tl] = REMAP_PHYS_LT;
+			remap_table[port][RETRO_DEVICE_ID_JOYPAD_L2] = REMAP_PHYS_NONE;
+		}
+
+		unsigned tr = legacy_trigger_r2[port];
+		if (tr != LEGACY_TRIGGER_UNSET && tr < REMAP_MAX_BUTTONS &&
+		    tr != RETRO_DEVICE_ID_JOYPAD_R2) {
+			remap_table[port][tr] = REMAP_PHYS_RT;
+			remap_table[port][RETRO_DEVICE_ID_JOYPAD_R2] = REMAP_PHYS_NONE;
+		}
+	}
 }
 
 void remap_reset_defaults(int port)
 {
 	if (port < 0 || port >= REMAP_MAX_PORTS) return;
 	memcpy(remap_table[port], default_map, sizeof(default_map));
-	trigger_l2_target[port] = RETRO_DEVICE_ID_JOYPAD_L2;
-	trigger_r2_target[port] = RETRO_DEVICE_ID_JOYPAD_R2;
-	port_analog_dpad[port]  = -1;
+	port_analog_dpad[port] = -1;
 }
 
 void remap_reset_all_defaults(void)
@@ -174,29 +208,38 @@ void remap_reset_all_defaults(void)
 
 void remap_init(const char *rom_path)
 {
-	/* Primeiro define os padrões para todas as portas */
 	remap_reset_all_defaults();
-
-	/* Constrói o caminho do arquivo de remap */
 	build_remap_path(rom_path);
-
-	/* Tenta carregar */
 	remap_load();
 }
 
 void remap_load(void)
 {
+	remap_reset_all_defaults();
+	loaded_version = REMAP_FORMAT_VERSION;
+	for (int p = 0; p < REMAP_MAX_PORTS; p++) {
+		legacy_trigger_l2[p] = LEGACY_TRIGGER_UNSET;
+		legacy_trigger_r2[p] = LEGACY_TRIGGER_UNSET;
+	}
+
 	if (!remap_filepath[0]) return;
 
+	bool parsed = false;
 	if (ini_parse(remap_filepath, remap_ini_handler, NULL) == 0) {
-		remap_loaded = true;
+		parsed = true;
 		printf("Remap carregado: %s\n", remap_filepath);
 	} else if (legacy_remap_filepath[0] &&
 	           ini_parse(legacy_remap_filepath, remap_ini_handler, NULL) == 0) {
-		remap_loaded = true;
+		parsed = true;
 		printf("Remap legado carregado: %s\n", legacy_remap_filepath);
 	} else {
 		printf("Sem arquivo de remap (usando padrao): %s\n", remap_filepath);
+	}
+
+	if (parsed) {
+		if (loaded_version < 2)
+			remap_migrate_legacy_v1();
+		remap_loaded = true;
 	}
 }
 
@@ -219,15 +262,12 @@ void remap_save(void)
 		return;
 	}
 
+	fprintf(f, "[meta]\nversion = %d\n\n", REMAP_FORMAT_VERSION);
+
 	for (int port = 0; port < REMAP_MAX_PORTS; port++) {
 		fprintf(f, "[port%d]\n", port);
-		for (int i = 0; i < REMAP_MAX_BUTTONS; i++) {
+		for (int i = 0; i < REMAP_MAX_BUTTONS; i++)
 			fprintf(f, "button_%d = %u\n", i, remap_table[port][i]);
-		}
-		if (trigger_l2_target[port] != RETRO_DEVICE_ID_JOYPAD_L2)
-			fprintf(f, "trigger_l2 = %u\n", trigger_l2_target[port]);
-		if (trigger_r2_target[port] != RETRO_DEVICE_ID_JOYPAD_R2)
-			fprintf(f, "trigger_r2 = %u\n", trigger_r2_target[port]);
 		if (port_analog_dpad[port] >= 0)
 			fprintf(f, "analog_dpad = %d\n", port_analog_dpad[port]);
 		fprintf(f, "\n");
@@ -238,30 +278,18 @@ void remap_save(void)
 	printf("Remap salvo: %s\n", remap_filepath);
 }
 
-void remap_set(int port, unsigned retro_id, unsigned glfw_button)
+void remap_set(int port, unsigned retro_id, unsigned phys_code)
 {
 	if (port < 0 || port >= REMAP_MAX_PORTS) return;
 	if (retro_id >= REMAP_MAX_BUTTONS) return;
-	remap_table[port][retro_id] = glfw_button;
+	remap_table[port][retro_id] = phys_code;
 }
 
 unsigned remap_get(int port, unsigned retro_id)
 {
-	if (port < 0 || port >= REMAP_MAX_PORTS) return 0;
-	if (retro_id >= REMAP_MAX_BUTTONS) return 0;
+	if (port < 0 || port >= REMAP_MAX_PORTS) return REMAP_PHYS_NONE;
+	if (retro_id >= REMAP_MAX_BUTTONS) return REMAP_PHYS_NONE;
 	return remap_table[port][retro_id];
-}
-
-unsigned remap_get_trigger_l2_target(int port)
-{
-	if (port < 0 || port >= REMAP_MAX_PORTS) return RETRO_DEVICE_ID_JOYPAD_L2;
-	return trigger_l2_target[port];
-}
-
-unsigned remap_get_trigger_r2_target(int port)
-{
-	if (port < 0 || port >= REMAP_MAX_PORTS) return RETRO_DEVICE_ID_JOYPAD_R2;
-	return trigger_r2_target[port];
 }
 
 int remap_get_analog_dpad_mode(int port)

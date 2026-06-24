@@ -26,6 +26,8 @@ void cfg_defaults(config *c)
 	c->ff_button = -1;
 	c->volume = 100;
 	c->mute = false;
+	c->input_profile = "auto";
+	c->game_profile = "none";
 }
 
 int cfg_handler(void* user, const char* section, const char* name, const char* value)
@@ -75,6 +77,10 @@ int cfg_handler(void* user, const char* section, const char* name, const char* v
 		c->volume = atoi(value);
 	else if (MATCH("", "mute"))
 		c->mute = strcmp(value, "true") == 0;
+	else if (MATCH("", "input_profile"))
+		c->input_profile = strdup(value);
+	else if (MATCH("", "game_profile"))
+		c->game_profile = strdup(value);
 	else
 		return 0;
 	return 1;
@@ -97,6 +103,8 @@ int cfg_save(const char* path, const config* c)
 	if (c->shader)   fprintf(f, "shader = %s\n", c->shader);
 	if (c->filter)   fprintf(f, "filter = %s\n", c->filter);
 	if (c->language) fprintf(f, "language = %s\n", c->language);
+	if (c->input_profile) fprintf(f, "input_profile = %s\n", c->input_profile);
+	if (c->game_profile)  fprintf(f, "game_profile = %s\n", c->game_profile);
 
 	fprintf(f, "swap_interval = %d\n", c->swap_interval);
 	fprintf(f, "fullscreen = %s\n", c->fullscreen ? "true" : "false");

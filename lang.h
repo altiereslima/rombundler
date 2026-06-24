@@ -110,6 +110,17 @@ typedef enum {
 	STR_HINT_ASPECT,
 	STR_HINT_ASPECT_EDIT,
 
+	/* Controles — descritores / perfis */
+	STR_EMULATED_PAD,       /* "Controle emulado" */
+	STR_NAME_SOURCE,        /* "Nomes" */
+	STR_SRC_CORE,           /* "do nucleo (core)" */
+	STR_SRC_FALLBACK,       /* "fallback do perfil" */
+	STR_VIEW_DESCRIPTORS,   /* "Ver descritores do core" */
+	STR_DESC_HEADER,        /* "DESCRITORES DO CORE" */
+	STR_NO_DESCRIPTORS,     /* "Nenhum descritor fornecido pelo core" */
+	STR_HINT_DESCRIPTORS,
+	STR_HINT_INPUT2,        /* segunda linha de dica (limpar) */
+
 	STR_COUNT               /* Total de strings */
 } string_id;
 

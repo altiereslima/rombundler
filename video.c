@@ -70,12 +70,17 @@ static struct {
 } shader = {0};
 
 static unsigned long long video_refresh_count = 0;
+/* Tamanho atual da textura de software (para usar glTexSubImage2D em vez de
+ * recriar a textura todo frame). Reiniciado em video_configure. */
+static unsigned sw_last_w = 0;
+static unsigned sw_last_h = 0;
 static unsigned long long video_probe_count = 0;
 static unsigned long long video_proc_lookup_count = 0;
 static unsigned long long video_fb_callback_count = 0;
 static int video_hw_present_path = -1; /* -1 unknown, 0 frontend FBO, 1 default framebuffer */
 static int video_last_frame_mode = 0; /* 0 unknown, 1 hw_fbo, 2 software */
 static bool is_fullscreen = false;
+static void center_window_workarea(int w, int h);
 static int saved_x = 0, saved_y = 0;
 static int saved_w = 800, saved_h = 600;
 
@@ -558,8 +563,8 @@ void create_window(int width, int height)
 		die("Failed to create window.");
 
 	if (!is_fullscreen) {
-		glfwGetWindowPos(window, &saved_x, &saved_y);
-		glfwGetWindowSize(window, &saved_w, &saved_h);
+		/* Centraliza na área útil já na abertura em modo janela. */
+		center_window_workarea(saved_w, saved_h);
 		g_cfg.window_width = saved_w;
 		g_cfg.window_height = saved_h;
 	}
@@ -825,6 +830,10 @@ void video_configure(const struct retro_game_geometry *geom)
 
 	init_framebuffer(geom->max_width, geom->max_height);
 
+	/* Textura recriada: força glTexImage2D no próximo frame de software. */
+	sw_last_w = 0;
+	sw_last_h = 0;
+
 	video.tex_w = geom->max_width;
 	video.tex_h = geom->max_height;
 	video.clip_w = geom->base_width;
@@ -891,7 +900,9 @@ bool video_set_pixel_format(unsigned format)
 
 	switch (format) {
 		case RETRO_PIXEL_FORMAT_0RGB1555:
-			video.pixfmt = GL_UNSIGNED_SHORT_5_5_5_1;
+			/* 0RGB1555: bit 15 ignorado, R 14-10, G 9-5, B 4-0 → casa com
+			 * GL_UNSIGNED_SHORT_1_5_5_5_REV + GL_BGRA. */
+			video.pixfmt = GL_UNSIGNED_SHORT_1_5_5_5_REV;
 			video.pixtype = GL_BGRA;
 			video.bpp = sizeof(uint16_t);
 			break;
@@ -958,12 +969,26 @@ void video_refresh(const void *data, unsigned width, unsigned height, size_t pit
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	glBindTexture(GL_TEXTURE_2D, video.tex_id);
 	glPixelStorei(GL_UNPACK_ROW_LENGTH, video.pitch / video.bpp);
+	/* Alinhamento de linha conforme o bpp (evita distorção em 16 bpp com
+	 * largura ímpar, onde pitch não é múltiplo de 4). */
+	glPixelStorei(GL_UNPACK_ALIGNMENT, video.bpp >= 4 ? 4 : video.bpp);
 
 	glUseProgram(shader.program);
 	glUniform2f(shader.u_tex_size, (float)width, (float)height);
 
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, video.pixtype, video.pixfmt, data);
+	/* Recria a textura só quando o tamanho muda; senão atualiza o conteúdo
+	 * (glTexSubImage2D) sem realocar todo frame. */
+	if (width != sw_last_w || height != sw_last_h) {
+		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
+		             video.pixtype, video.pixfmt, data);
+		sw_last_w = width;
+		sw_last_h = height;
+	} else {
+		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+		                video.pixtype, video.pixfmt, data);
+	}
 
+	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
 	glUseProgram(0);
 	log_gl_errors("video_refresh");
 }
@@ -1127,6 +1152,44 @@ bool video_is_fullscreen(void)
 	return is_fullscreen;
 }
 
+/* Centraliza a janela na área útil do monitor (sem cobrir a barra de tarefas),
+ * deixando a barra de título sempre visível. Atualiza saved_x/y/w/h. */
+static void center_window_workarea(int w, int h)
+{
+	GLFWmonitor *monitor = glfwGetPrimaryMonitor();
+	int mx = 0, my = 0, mw = 0, mh = 0;
+	int left = 0, top = 0, right = 0, bottom = 0;
+	int x, y;
+
+	if (!monitor || !window)
+		return;
+
+	glfwGetMonitorWorkarea(monitor, &mx, &my, &mw, &mh);
+	if (mw <= 0 || mh <= 0)
+		return;
+
+	glfwGetWindowFrameSize(window, &left, &top, &right, &bottom);
+
+	/* Garante que a janela inteira (com bordas/título) caiba na área útil. */
+	if (w + left + right > mw) w = mw - left - right;
+	if (h + top + bottom > mh) h = mh - top - bottom;
+	if (w < 200) w = 200;
+	if (h < 150) h = 150;
+
+	x = mx + (mw - (w + left + right)) / 2 + left;
+	y = my + (mh - (h + top + bottom)) / 2 + top;
+	if (x < mx + left) x = mx + left;
+	if (y < my + top)  y = my + top;
+
+	glfwSetWindowSize(window, w, h);
+	glfwSetWindowPos(window, x, y);
+
+	saved_x = x;
+	saved_y = y;
+	saved_w = w;
+	saved_h = h;
+}
+
 void video_toggle_fullscreen(void)
 {
 	if (!window) return;
@@ -1145,8 +1208,14 @@ void video_toggle_fullscreen(void)
 		is_fullscreen = true;
 		g_cfg.fullscreen = true;
 	} else {
-		/* Volta para modo janela */
-		glfwSetWindowMonitor(window, NULL, saved_x, saved_y, saved_w, saved_h, 0);
+		/* Volta para modo janela e CENTRALIZA (corrige janela no canto com a
+		 * barra de título escondida, sobretudo quando o app inicia em fullscreen). */
+		int w = saved_w > 0 ? saved_w : (g_cfg.window_width  > 0 ? g_cfg.window_width  : 800);
+		int h = saved_h > 0 ? saved_h : (g_cfg.window_height > 0 ? g_cfg.window_height : 600);
+
+		glfwSetWindowMonitor(window, NULL, 0, 0, w, h, 0);
+		center_window_workarea(w, h);
+
 		is_fullscreen = false;
 		g_cfg.fullscreen = false;
 		g_cfg.window_width = saved_w;

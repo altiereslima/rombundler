@@ -103,6 +103,16 @@ static const char *strings_pt[STR_COUNT] = {
 	[STR_ASPECT_RESET]      = "Restaurar Padr\xC3\xA3o",
 	[STR_HINT_ASPECT]       = "Esq/Dir: Alterar   A: Selecionar   B/Esc: Voltar",
 	[STR_HINT_ASPECT_EDIT]  = "D-Pad: Mover   LB/RB: Largura   LT/RT: Altura   A: Salvar   B: Cancelar",
+
+	[STR_EMULATED_PAD]      = "Controle emulado",
+	[STR_NAME_SOURCE]       = "Nomes",
+	[STR_SRC_CORE]          = "fornecidos pelo nucleo",
+	[STR_SRC_FALLBACK]      = "fallback do perfil",
+	[STR_VIEW_DESCRIPTORS]  = "Ver descritores do core",
+	[STR_DESC_HEADER]       = "DESCRITORES DO CORE",
+	[STR_NO_DESCRIPTORS]    = "Nenhum descritor fornecido pelo core (usando fallback)",
+	[STR_HINT_DESCRIPTORS]  = "Cima/Baixo: Rolar   B/Esc: Voltar",
+	[STR_HINT_INPUT2]       = "Backspace: Limpar botao   L/R: Trocar porta",
 };
 
 static const char *strings_en[STR_COUNT] = {
@@ -175,6 +185,16 @@ static const char *strings_en[STR_COUNT] = {
 	[STR_ASPECT_RESET]      = "Reset to Default",
 	[STR_HINT_ASPECT]       = "Left/Right: Change   A: Select   B/Esc: Back",
 	[STR_HINT_ASPECT_EDIT]  = "D-Pad: Move   LB/RB: Width   LT/RT: Height   A: Save   B: Cancel",
+
+	[STR_EMULATED_PAD]      = "Emulated controller",
+	[STR_NAME_SOURCE]       = "Names",
+	[STR_SRC_CORE]          = "provided by the core",
+	[STR_SRC_FALLBACK]      = "profile fallback",
+	[STR_VIEW_DESCRIPTORS]  = "View core descriptors",
+	[STR_DESC_HEADER]       = "CORE INPUT DESCRIPTORS",
+	[STR_NO_DESCRIPTORS]    = "No descriptors provided by the core (using fallback)",
+	[STR_HINT_DESCRIPTORS]  = "Up/Down: Scroll   B/Esc: Back",
+	[STR_HINT_INPUT2]       = "Backspace: Clear button   L/R: Change port",
 };
 
 static const char *strings_es[STR_COUNT] = {

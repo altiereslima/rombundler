@@ -90,41 +90,6 @@ static bool unqueue_buffers()
 	return true;
 }
 
-void audio_callback_pull(void)
-{
-	if (!audio_cb_active || !audio_cb.callback || !al)
-		return;
-
-	/* Libera buffers ja tocados de volta para o pool antes de pedir mais audio */
-	unqueue_buffers();
-
-	const size_t target_bytes = (size_t)BUFSIZE * 2;
-	int max_iter = 1024;
-	int stale = 0;
-
-	pull_bytes_received = 0;
-	while (pull_bytes_received < target_bytes && max_iter-- > 0) {
-		ALint queued = 0, processed = 0;
-		alGetSourcei(al->source, AL_BUFFERS_QUEUED, &queued);
-		alGetSourcei(al->source, AL_BUFFERS_PROCESSED, &processed);
-
-		if ((queued - processed) >= NUMBUFFERS && processed == 0)
-			break;
-
-		size_t before = pull_bytes_received;
-		audio_cb.callback();
-
-		if (pull_bytes_received == before) {
-			if (++stale >= 4)
-				break;
-		} else {
-			stale = 0;
-		}
-
-		unqueue_buffers();
-	}
-}
-
 static bool get_buffer(ALuint *buffer)
 {
 	if (!al->res_ptr)
@@ -134,10 +99,22 @@ static bool get_buffer(ALuint *buffer)
 			if (!unqueue_buffers())
 				return false;
 		} else {
-			for (;;)
-			{
-				if (unqueue_buffers())
-					break;
+			/* Espera um buffer ser liberado, mas com timeout e sleep — nunca
+			 * gira a CPU nem trava para sempre se a fonte estagnar. */
+			int spins = 0;
+			while (!unqueue_buffers()) {
+				ALint st = 0;
+				alGetSourcei(al->source, AL_SOURCE_STATE, &st);
+				if (st != AL_PLAYING) {
+					ALint queued = 0;
+					alGetSourcei(al->source, AL_BUFFERS_QUEUED, &queued);
+					if (queued > 0)
+						alSourcePlay(al->source);
+				}
+				if (++spins > 2500) /* ~0,5 s: desiste e descarta o áudio */
+					return false;
+				struct timespec ts = {0, 200000}; /* 0,2 ms */
+				nanosleep(&ts, NULL);
 			}
 		}
 	}

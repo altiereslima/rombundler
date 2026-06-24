@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <string.h>
 #include <wchar.h>
+#include <time.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -37,6 +38,7 @@
 #include "font.h"
 #include "menu.h"
 #include "remap.h"
+#include "input_profile.h"
 #include "lang.h"
 #include "aspect.h"
 
@@ -854,7 +856,9 @@ int main(int argc, char *argv[]) {
 	/* Inicializa o remapeamento e aspecto por jogo */
 	remap_init(g_cfg.rom);
 	aspect_init(g_cfg.rom);
+	game_profile_init(g_cfg.game_profile);
 
+	srm_init(g_cfg.rom);
 	srm_load();
 
 	if (!video_uses_vulkan())
@@ -867,6 +871,10 @@ int main(int argc, char *argv[]) {
 
 	unsigned frame = 0;
 	bool last_fast_forward = false;
+	double frame_deadline = glfwGetTime();
+#if defined(_WIN32)
+	timeBeginPeriod(1); /* melhora a precisão do sleep do limitador de FPS */
+#endif
 	while (!glfwWindowShouldClose(window)) {
 		glfwPollEvents();
 		input_poll();
@@ -915,10 +923,37 @@ int main(int argc, char *argv[]) {
 
 		if (!video_uses_vulkan())
 			glfwSwapBuffers(window);
+
+		/* Limitador de FPS ao ritmo do core — rede de segurança além do vsync
+		 * (corrige jogo acelerado em monitores de 120/144 Hz ou com vsync off). */
+		if (!input_is_fast_forward()) {
+			double fps = core_get_nominal_fps();
+			if (fps > 1.0) {
+				double target = 1.0 / fps;
+				double now = glfwGetTime();
+				if (frame_deadline < now - target)
+					frame_deadline = now; /* muito atrasado: ressincroniza */
+				frame_deadline += target;
+				double remaining = frame_deadline - glfwGetTime();
+				if (remaining > 0.003) {
+					struct timespec ts;
+					ts.tv_sec  = 0;
+					ts.tv_nsec = (long)((remaining - 0.002) * 1e9);
+					nanosleep(&ts, NULL);
+				}
+				while (glfwGetTime() < frame_deadline) { /* spin final curto */ }
+			}
+		} else {
+			frame_deadline = glfwGetTime();
+		}
+
 		frame++;
 		if (frame % 600 == 0)
 			srm_save();
 	}
+#if defined(_WIN32)
+	timeEndPeriod(1);
+#endif
 
 	/* Salva tudo antes de sair */
 	persist_runtime_config();

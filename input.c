@@ -169,8 +169,19 @@ struct keymap kbd_binds[] = {
 #define MAX_PLAYERS 5
 static int16_t state[MAX_PLAYERS][RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
 static int16_t analog_state[MAX_PLAYERS][2][2] = { 0 };
+/* Valor analógico (0..0x7fff) de cada botão, para RETRO_DEVICE_INDEX_ANALOG_BUTTON */
+static int16_t button_analog[MAX_PLAYERS][RETRO_DEVICE_ID_JOYPAD_R3+1] = { 0 };
 static retro_keyboard_event_t key_event = NULL;
 static int active_gamepads[MAX_PLAYERS] = { -1, -1, -1, -1, -1 };
+
+/* Roda do mouse acumulada pelo callback de scroll (consumida em input_state) */
+static double scroll_accum_x = 0.0;
+static double scroll_accum_y = 0.0;
+static bool   scroll_cb_installed = false;
+
+/* Protótipos dos helpers de interpretação física (definidos mais abaixo). */
+static int     input_phys_pressed(const GLFWgamepadstate *pad, unsigned code);
+static int16_t input_phys_analog(const GLFWgamepadstate *pad, unsigned code);
 
 static void input_refresh_active_gamepads(void)
 {
@@ -248,29 +259,14 @@ static bool ff_gamepad_button_pressed(void)
 	for (int port = 0; port < MAX_PLAYERS; port++) {
 		int jid = input_gamepad_jid_for_port(port);
 		GLFWgamepadstate pad;
-		unsigned mapped_btn = 0;
 
 		if (jid < 0)
 			continue;
 		if (!glfwGetGamepadState(jid, &pad))
 			continue;
 
-		switch (g_cfg.ff_button) {
-			case RETRO_DEVICE_ID_JOYPAD_L2:
-				if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] > 0.5f)
-					return true;
-				continue;
-			case RETRO_DEVICE_ID_JOYPAD_R2:
-				if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.5f)
-					return true;
-				continue;
-			default:
-				mapped_btn = remap_get(port, (unsigned)g_cfg.ff_button);
-				if (mapped_btn <= GLFW_GAMEPAD_BUTTON_LAST &&
-				    pad.buttons[mapped_btn] == GLFW_PRESS)
-					return true;
-				break;
-		}
+		if (input_phys_pressed(&pad, remap_get(port, (unsigned)g_cfg.ff_button)))
+			return true;
 	}
 
 	return false;
@@ -278,6 +274,74 @@ static bool ff_gamepad_button_pressed(void)
 
 int16_t floatToAnalog(float v) {
 	return (int16_t)(v * 32767.0f);
+}
+
+/* Interpreta um código físico do remap (botão GLFW, gatilho LT/RT ou NONE)
+ * como um estado digital pressionado/solto. */
+static int input_phys_pressed(const GLFWgamepadstate *pad, unsigned code)
+{
+	if (code == REMAP_PHYS_NONE)
+		return 0;
+	if (code == REMAP_PHYS_LT)
+		return pad->axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] > 0.5f;
+	if (code == REMAP_PHYS_RT)
+		return pad->axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.5f;
+	if (code <= GLFW_GAMEPAD_BUTTON_LAST)
+		return pad->buttons[code] == GLFW_PRESS;
+	return 0;
+}
+
+/* Valor analógico (0..0x7fff) de um código físico (gatilhos dão valor contínuo). */
+static int16_t input_phys_analog(const GLFWgamepadstate *pad, unsigned code)
+{
+	float v;
+	if (code == REMAP_PHYS_LT)
+		v = pad->axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER];
+	else if (code == REMAP_PHYS_RT)
+		v = pad->axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER];
+	else
+		return input_phys_pressed(pad, code) ? 0x7fff : 0;
+
+	v = (v + 1.0f) * 0.5f; /* eixo -1..1 -> 0..1 */
+	if (v < 0.0f) v = 0.0f;
+	if (v > 1.0f) v = 1.0f;
+	return (int16_t)(v * 0x7fff);
+}
+
+static void input_scroll_cb(GLFWwindow *w, double xoff, double yoff)
+{
+	(void)w;
+	scroll_accum_x += xoff;
+	scroll_accum_y += yoff;
+}
+
+/* Envia eventos de teclado ao core apenas nas transições (down/up), com
+ * modificadores — conforme o contrato de retro_keyboard_callback. */
+static void input_dispatch_keyboard(void)
+{
+	static bool prev[256];
+	unsigned mods = 0;
+
+	if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+	    glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS)
+		mods |= RETROKMOD_SHIFT;
+	if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+	    glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS)
+		mods |= RETROKMOD_CTRL;
+	if (glfwGetKey(window, GLFW_KEY_LEFT_ALT) == GLFW_PRESS ||
+	    glfwGetKey(window, GLFW_KEY_RIGHT_ALT) == GLFW_PRESS)
+		mods |= RETROKMOD_ALT;
+	if (glfwGetKey(window, GLFW_KEY_LEFT_SUPER) == GLFW_PRESS ||
+	    glfwGetKey(window, GLFW_KEY_RIGHT_SUPER) == GLFW_PRESS)
+		mods |= RETROKMOD_META;
+
+	for (int i = 0; (kbd_binds[i].k || kbd_binds[i].rk) && i < 256; ++i) {
+		bool pressed = glfwGetKey(window, kbd_binds[i].k) == GLFW_PRESS;
+		if (pressed != prev[i]) {
+			key_event(pressed, kbd_binds[i].rk, 0, (uint16_t)mods);
+			prev[i] = pressed;
+		}
+	}
 }
 
 bool input_is_fast_forward(void) {
@@ -414,30 +478,35 @@ void input_poll(void) {
 
 	/* ─── Entrada normal do jogo ─── */
 
+	if (!scroll_cb_installed && window) {
+		glfwSetScrollCallback(window, input_scroll_cb);
+		scroll_cb_installed = true;
+	}
+
 	for (port = 0; port < MAX_PLAYERS; port++) {
 		memset(state[port], 0, sizeof(state[port]));
 		memset(analog_state[port], 0, sizeof(analog_state[port]));
+		memset(button_analog[port], 0, sizeof(button_analog[port]));
 	}
 
-	if (key_event) {
-		for (i = 0; kbd_binds[i].k || kbd_binds[i].rk; ++i) {
-			bool pressed = glfwGetKey(window, kbd_binds[i].k) == GLFW_PRESS;
-			key_event(pressed, kbd_binds[i].rk, 0, 0);
-		}
-	} else {
-		for (i = 0; i < 14; i++)
-			state[0][kbd2joy_binds[i].rk] = glfwGetKey(window, kbd2joy_binds[i].k) == GLFW_PRESS;
+	/* Teclado -> joypad (sempre disponível, porta 0) */
+	for (i = 0; kbd2joy_binds[i].k || kbd2joy_binds[i].rk; ++i)
+		if (glfwGetKey(window, kbd2joy_binds[i].k) == GLFW_PRESS)
+			state[0][kbd2joy_binds[i].rk] = 1;
 
-		/* ESC abre o menu ao invés de fechar a janela */
-		if (menu_supported &&
-		    hotkey_triggered(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS,
-			&hotkey_escape_prev)) {
-			log_printf("input", "ESC hotkey triggered");
-			menu_toggle();
-		}
+	/* ESC abre o menu ao invés de fechar a janela */
+	if (menu_supported &&
+	    hotkey_triggered(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS,
+		&hotkey_escape_prev)) {
+		log_printf("input", "ESC hotkey triggered");
+		menu_toggle();
 	}
 
-	/* Gamepads — usa o sistema de remap */
+	/* Callback de teclado do core (apenas transições, com modificadores) */
+	if (key_event)
+		input_dispatch_keyboard();
+
+	/* Gamepads — modelo de remap unificado (todos os 16 botões, inclui L2/R2) */
 	for (port = 0; port < MAX_PLAYERS; port++) {
 		int jid = input_gamepad_jid_for_port(port);
 
@@ -446,13 +515,14 @@ void input_poll(void) {
 
 		GLFWgamepadstate pad;
 		if (glfwGetGamepadState(jid, &pad)) {
-			/* Botões de ação via remap (14 primeiros botões: A,B,X,Y,UP,DOWN,LEFT,RIGHT,START,SELECT,L,R,L3,R3) */
 			for (i = 0; i <= RETRO_DEVICE_ID_JOYPAD_R3; i++) {
-				unsigned mapped_btn = remap_get(port, i);
-				if (i == RETRO_DEVICE_ID_JOYPAD_L2 || i == RETRO_DEVICE_ID_JOYPAD_R2)
-					continue; /* L2/R2 são eixos, tratados abaixo */
-				if (mapped_btn <= GLFW_GAMEPAD_BUTTON_LAST)
-					state[port][i] = pad.buttons[mapped_btn];
+				unsigned code = remap_get(port, i);
+				int16_t av;
+				if (input_phys_pressed(&pad, code))
+					state[port][i] = 1;
+				av = input_phys_analog(&pad, code);
+				if (av > button_analog[port][i])
+					button_analog[port][i] = av;
 			}
 
 			/* Analógicos */
@@ -460,12 +530,6 @@ void input_poll(void) {
 			analog_state[port][RETRO_DEVICE_INDEX_ANALOG_LEFT][RETRO_DEVICE_ID_ANALOG_Y] = floatToAnalog(pad.axes[GLFW_GAMEPAD_AXIS_LEFT_Y]);
 			analog_state[port][RETRO_DEVICE_INDEX_ANALOG_RIGHT][RETRO_DEVICE_ID_ANALOG_X] = floatToAnalog(pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_X]);
 			analog_state[port][RETRO_DEVICE_INDEX_ANALOG_RIGHT][RETRO_DEVICE_ID_ANALOG_Y] = floatToAnalog(pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y]);
-
-			/* L2/R2: gatilhos analógicos com remap opcional para outro botão retro */
-			if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] > 0.5f)
-				state[port][remap_get_trigger_l2_target(port)] = 1;
-			if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.5f)
-				state[port][remap_get_trigger_r2_target(port)] = 1;
 
 			/* Analógico para D-pad: modo por porta (-1=herda global, 0=off, 1=esq, 2=dir, 3=ambos) */
 			int adpad = remap_get_analog_dpad_mode(port);
@@ -485,6 +549,12 @@ void input_poll(void) {
 			}
 		}
 	}
+
+	/* Botões digitais (ex.: teclado) também alimentam o valor analógico do botão */
+	for (port = 0; port < MAX_PLAYERS; port++)
+		for (i = 0; i <= RETRO_DEVICE_ID_JOYPAD_R3; i++)
+			if (state[port][i] && button_analog[port][i] == 0)
+				button_analog[port][i] = 0x7fff;
 }
 
 void input_set_keyboard_callback(retro_keyboard_event_t e)
@@ -516,6 +586,12 @@ int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 	}
 
 	if (device == RETRO_DEVICE_ANALOG) {
+		/* Valor analógico de um botão (ex.: pressão de gatilho L2/R2) */
+		if (index == RETRO_DEVICE_INDEX_ANALOG_BUTTON) {
+			if (id > RETRO_DEVICE_ID_JOYPAD_R3)
+				return 0;
+			return button_analog[port][id];
+		}
 		if (index > RETRO_DEVICE_INDEX_ANALOG_RIGHT ||
 		    id > RETRO_DEVICE_ID_ANALOG_Y)
 			return 0;
@@ -527,18 +603,65 @@ int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 		double x = 0;
 		double y = 0;
 		glfwGetCursorPos(window, &x, &y);
-		if (id == RETRO_DEVICE_ID_MOUSE_X) {
-			int16_t d = (int16_t)(x - oldx);
-			oldx = x;
-			return d;
+		switch (id) {
+			case RETRO_DEVICE_ID_MOUSE_X: {
+				int16_t d = (int16_t)(x - oldx);
+				oldx = x;
+				return d;
+			}
+			case RETRO_DEVICE_ID_MOUSE_Y: {
+				int16_t d = (int16_t)(y - oldy);
+				oldy = y;
+				return d;
+			}
+			case RETRO_DEVICE_ID_MOUSE_LEFT:
+				return glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+			case RETRO_DEVICE_ID_MOUSE_RIGHT:
+				return glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+			case RETRO_DEVICE_ID_MOUSE_MIDDLE:
+				return glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS;
+			case RETRO_DEVICE_ID_MOUSE_BUTTON_4:
+				return glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_4) == GLFW_PRESS;
+			case RETRO_DEVICE_ID_MOUSE_BUTTON_5:
+				return glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_5) == GLFW_PRESS;
+			case RETRO_DEVICE_ID_MOUSE_WHEELUP:
+				if (scroll_accum_y >= 1.0) { scroll_accum_y -= 1.0; return 1; }
+				return 0;
+			case RETRO_DEVICE_ID_MOUSE_WHEELDOWN:
+				if (scroll_accum_y <= -1.0) { scroll_accum_y += 1.0; return 1; }
+				return 0;
+			case RETRO_DEVICE_ID_MOUSE_HORIZ_WHEELUP:
+				if (scroll_accum_x >= 1.0) { scroll_accum_x -= 1.0; return 1; }
+				return 0;
+			case RETRO_DEVICE_ID_MOUSE_HORIZ_WHEELDOWN:
+				if (scroll_accum_x <= -1.0) { scroll_accum_x += 1.0; return 1; }
+				return 0;
+			default:
+				return 0;
 		}
-		if (id == RETRO_DEVICE_ID_MOUSE_Y) {
-			int16_t d = (int16_t)(y - oldy);
-			oldy = y;
-			return d;
+	}
+
+	if (device == RETRO_DEVICE_POINTER && window != NULL) {
+		int ww = 0, wh = 0;
+		double x = 0, y = 0;
+		glfwGetWindowSize(window, &ww, &wh);
+		if (ww <= 0 || wh <= 0)
+			return 0;
+		glfwGetCursorPos(window, &x, &y);
+		/* Normaliza para -0x7fff..0x7fff sobre a janela inteira.
+		 * (não desconta a borda preta de aspect — ver bugs_conhecidos.md) */
+		switch (id) {
+			case RETRO_DEVICE_ID_POINTER_X:
+				return (int16_t)((x / ww) * 2.0 * 0x7fff - 0x7fff);
+			case RETRO_DEVICE_ID_POINTER_Y:
+				return (int16_t)((y / wh) * 2.0 * 0x7fff - 0x7fff);
+			case RETRO_DEVICE_ID_POINTER_PRESSED:
+				return glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+			case RETRO_DEVICE_ID_POINTER_COUNT:
+				return 1;
+			default:
+				return 0;
 		}
-		if (id == RETRO_DEVICE_ID_MOUSE_LEFT && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_1) == GLFW_PRESS)
-			return 1;
 	}
 
 	if (device == RETRO_DEVICE_KEYBOARD)

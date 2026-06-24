@@ -33,7 +33,7 @@ endif
 
 CFLAGS += -Wall -O3 -fPIC -flto -I. -Iinclude -Ideps/include
 
-OBJ = main.o glad.o config.o core.o audio.o video.o video_vulkan.o input.o options.o ini.o utils.o srm.o menu.o font.o remap.o lang.o aspect.o
+OBJ = main.o glad.o config.o core.o audio.o video.o video_vulkan.o input.o options.o ini.o utils.o srm.o menu.o font.o remap.o lang.o aspect.o input_descriptors.o input_profile.o
 
 %.o: %.c
 	$(CC) -c -o $@ $< $(CFLAGS)

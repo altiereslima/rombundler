@@ -24,6 +24,7 @@
 #include "video.h"
 #include "audio.h"
 #include "input.h"
+#include "input_descriptors.h"
 #include "options.h"
 #include "config.h"
 
@@ -72,8 +73,8 @@ static int core_message_remaining = 0;
 struct retro_audio_callback audio_cb = {0};
 bool audio_cb_active = false;
 static bool ppsspp_save_root_prepared = false;
-static const struct retro_input_descriptor *input_descriptors = NULL;
 static const struct retro_controller_info *controller_infos = NULL;
+static int core_current_sample_rate = 0;
 static const struct retro_subsystem_info *subsystem_infos = NULL;
 static struct retro_disk_control_callback disk_control_cb = {0};
 static struct retro_disk_control_ext_callback disk_control_ext_cb = {0};
@@ -232,19 +233,6 @@ static int vfs_rename_utf8(const char *old_path, const char *new_path)
 	return rename(old_path, new_path);
 }
 #endif
-
-static unsigned count_input_descriptors(const struct retro_input_descriptor *desc)
-{
-	unsigned count = 0;
-
-	if (!desc)
-		return 0;
-
-	while (desc[count].description)
-		count++;
-
-	return count;
-}
 
 static unsigned count_controller_infos(const struct retro_controller_info *info)
 {
@@ -1357,9 +1345,11 @@ static bool core_environment(unsigned cmd, void *data)
 			return true;
 		}
 		case RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: {
-			input_descriptors = (const struct retro_input_descriptor *)data;
+			/* Cópia segura — o ponteiro do core não é garantido válido depois
+			 * desta chamada. Recopiado a cada chamada (cores dinâmicos). */
+			input_desc_set(data);
 			log_printf("core", "SET_INPUT_DESCRIPTORS accepted count=%u",
-				count_input_descriptors(input_descriptors));
+				input_desc_count());
 			return true;
 		}
 		case RETRO_ENVIRONMENT_GET_VARIABLE_UPDATE: {
@@ -1468,6 +1458,27 @@ static bool core_environment(unsigned cmd, void *data)
 		break;
 		case RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO: {
 			const struct retro_system_av_info *av = (const struct retro_system_av_info *)data;
+			if (!av)
+				return false;
+
+			/* Reconfigura o áudio se a taxa de amostragem mudou em runtime. */
+			if (av->timing.sample_rate > 0.0 &&
+			    (int)av->timing.sample_rate != core_current_sample_rate) {
+				log_printf("core", "AV_INFO sample_rate %d -> %d, reiniciando audio",
+					core_current_sample_rate, (int)av->timing.sample_rate);
+				audio_stop_thread();
+				audio_deinit();
+				audio_init((int)av->timing.sample_rate);
+				core_current_sample_rate = (int)av->timing.sample_rate;
+				if (audio_cb_active && audio_cb.set_state) {
+					audio_cb.set_state(true);
+					audio_start_thread();
+				}
+			}
+
+			if (av->timing.fps > 0.0)
+				core_nominal_fps = (float)av->timing.fps;
+
 			return video_set_system_av_info(av);
 		}
 		break;
@@ -1650,6 +1661,8 @@ static bool core_environment(unsigned cmd, void *data)
 		}
 		case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: {
 			const enum retro_pixel_format *fmt = (enum retro_pixel_format *)data;
+			if (!fmt)
+				return false;
 			log_printf("core", "SET_PIXEL_FORMAT %u", *fmt);
 			return video_set_pixel_format(*fmt);
 		}
@@ -1939,6 +1952,7 @@ void core_load_game(const char *filename)
 
 	video_configure(&av.geometry);
 	audio_init(av.timing.sample_rate);
+	core_current_sample_rate = (int)av.timing.sample_rate;
 
 	/* Ativa áudio via callback (MAME etc) após dispositivo de áudio estar pronto */
 	if (audio_cb_active && audio_cb.set_state) {
@@ -2010,6 +2024,8 @@ void core_unload()
 	 * belongs to the core library and must not be called after
 	 * retro_deinit / dlclose. */
 	audio_stop_thread();
+
+	input_desc_clear();
 
 	if (core.initialized)
 		core.retro_deinit();

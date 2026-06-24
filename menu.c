@@ -24,6 +24,8 @@
 #include "options.h"
 #include "video.h"
 #include "remap.h"
+#include "input_descriptors.h"
+#include "input_profile.h"
 #include "libretro.h"
 #include "lang.h"
 #include "aspect.h"
@@ -373,46 +375,82 @@ static bool str_contains_ci(const char *haystack, const char *needle)
 	return false;
 }
 
-static bool controller_uses_xbox_labels(int port)
+/* Perfil de fallback ativo (detectado uma vez a partir do core/config). */
+static input_profile_t menu_active_profile(void)
 {
-	const char *name = NULL;
-
-	if (port < 0 || !glfwJoystickIsGamepad(port))
-		return false;
-
-	name = glfwGetGamepadName(port);
-	if (!name)
-		return false;
-
-	return str_contains_ci(name, "xbox") ||
-	       str_contains_ci(name, "microsoft");
+	static input_profile_t cached = INPUT_PROFILE_GENERIC;
+	static bool done = false;
+	if (!done) {
+		cached = input_profile_detect(g_cfg.core, g_cfg.rom, g_cfg.input_profile);
+		done = true;
+	}
+	return cached;
 }
 
-static const char *retro_button_display_name(int port, int id)
+/* Nome do botão EMULADO, na ordem de prioridade:
+ *   1. game_profile manual  2. input descriptor do core
+ *   3. fallback do input_profile  4. nome genérico RetroPad */
+static const char *emulated_button_name(int port, int id)
 {
-	if (controller_uses_xbox_labels(port)) {
-		switch (id) {
-			case RETRO_DEVICE_ID_JOYPAD_B: return lang_get(STR_BTN_A);
-			case RETRO_DEVICE_ID_JOYPAD_Y: return lang_get(STR_BTN_X);
-			case RETRO_DEVICE_ID_JOYPAD_A: return lang_get(STR_BTN_B);
-			case RETRO_DEVICE_ID_JOYPAD_X: return lang_get(STR_BTN_Y);
-			default: break;
-		}
-	}
+	const char *n;
+
+	n = game_profile_button_name(port, id);
+	if (n) return n;
+
+	n = input_desc_joypad((unsigned)port, (unsigned)id);
+	if (n) return n;
+
+	n = input_profile_fallback_button_name(menu_active_profile(), id);
+	if (n) return n;
 
 	return retro_button_name(id);
 }
 
-static const char *glfw_button_name(int btn)
+/* Tipo do controle físico, para rótulos amigáveis. */
+typedef enum { PAD_XBOX, PAD_PLAYSTATION, PAD_NINTENDO, PAD_GENERIC } pad_kind_t;
+
+static pad_kind_t detect_pad_kind(int port)
 {
-	switch (btn) {
-		case GLFW_GAMEPAD_BUTTON_A:            return "A (inf.)";
-		case GLFW_GAMEPAD_BUTTON_B:            return "B (dir.)";
-		case GLFW_GAMEPAD_BUTTON_X:            return "X (esq.)";
-		case GLFW_GAMEPAD_BUTTON_Y:            return "Y (cima)";
-		case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER:  return "LB";
-		case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: return "RB";
-		case GLFW_GAMEPAD_BUTTON_BACK:         return "Select";
+	const char *name = (port >= 0 && glfwJoystickIsGamepad(port))
+		? glfwGetGamepadName(port) : NULL;
+	if (!name)
+		return PAD_GENERIC;
+	if (str_contains_ci(name, "xbox") || str_contains_ci(name, "microsoft") ||
+	    str_contains_ci(name, "xinput"))
+		return PAD_XBOX;
+	if (str_contains_ci(name, "playstation") || str_contains_ci(name, "dualshock") ||
+	    str_contains_ci(name, "dualsense") || str_contains_ci(name, "sony") ||
+	    str_contains_ci(name, "ps4") || str_contains_ci(name, "ps5"))
+		return PAD_PLAYSTATION;
+	if (str_contains_ci(name, "nintendo") || str_contains_ci(name, "switch") ||
+	    str_contains_ci(name, "joy-con") || str_contains_ci(name, "joycon"))
+		return PAD_NINTENDO;
+	return PAD_GENERIC;
+}
+
+/* Nome do botão FÍSICO (código do remap), com rótulos por tipo de controle. */
+static const char *physical_button_name(int port, unsigned code)
+{
+	pad_kind_t k = detect_pad_kind(port);
+
+	switch (code) {
+		case REMAP_PHYS_NONE: return "(nenhum)";
+		case REMAP_PHYS_LT:   return k == PAD_PLAYSTATION ? "L2 (gatilho)" : "LT (gatilho)";
+		case REMAP_PHYS_RT:   return k == PAD_PLAYSTATION ? "R2 (gatilho)" : "RT (gatilho)";
+	}
+
+	switch (code) {
+		case GLFW_GAMEPAD_BUTTON_A:
+			return k == PAD_PLAYSTATION ? "X (Cross)" : k == PAD_NINTENDO ? "B" : "A";
+		case GLFW_GAMEPAD_BUTTON_B:
+			return k == PAD_PLAYSTATION ? "Circulo" : k == PAD_NINTENDO ? "A" : "B";
+		case GLFW_GAMEPAD_BUTTON_X:
+			return k == PAD_PLAYSTATION ? "Quadrado" : k == PAD_NINTENDO ? "Y" : "X";
+		case GLFW_GAMEPAD_BUTTON_Y:
+			return k == PAD_PLAYSTATION ? "Triangulo" : k == PAD_NINTENDO ? "X" : "Y";
+		case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER:  return k == PAD_PLAYSTATION ? "L1" : "LB";
+		case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: return k == PAD_PLAYSTATION ? "R1" : "RB";
+		case GLFW_GAMEPAD_BUTTON_BACK:         return "Select/Back";
 		case GLFW_GAMEPAD_BUTTON_START:        return "Start";
 		case GLFW_GAMEPAD_BUTTON_GUIDE:        return "Guide";
 		case GLFW_GAMEPAD_BUTTON_LEFT_THUMB:   return "L3";
@@ -421,7 +459,7 @@ static const char *glfw_button_name(int btn)
 		case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT:   return "D-Dir";
 		case GLFW_GAMEPAD_BUTTON_DPAD_DOWN:    return "D-Baixo";
 		case GLFW_GAMEPAD_BUTTON_DPAD_LEFT:    return "D-Esq";
-		default: return "???";
+		default: return "?";
 	}
 }
 
@@ -647,105 +685,118 @@ static bool input_page_audio(void)
 }
 
 /* Input / Remap page */
-#define REMAP_BUTTONS 14
+#define REMAP_BUTTONS 16
 #define MAX_REMAP_PORTS 4
+#define REMAP_ITEM_RESET  (REMAP_BUTTONS + 1)
+#define REMAP_ITEM_DESC   (REMAP_BUTTONS + 2)
+#define REMAP_ITEM_BACK   (REMAP_BUTTONS + 3)
+#define REMAP_TOTAL_ITEMS (REMAP_BUTTONS + 4)
 
 static int remap_port_sel = 0; /* Which port we're configuring */
 
 static void render_page_input(void)
 {
-	float x = scr_w * 0.1f;
-	float y = scr_h * 0.1f;
+	float x = scr_w * 0.08f;
+	float y = scr_h * 0.05f;
+	char buf[192];
 
 	y = render_item(x, y, lang_get(STR_INPUT_HEADER), false, true);
-	y += 10.0f;
+	y += 4.0f;
 
-	/* Port selector */
-	char port_buf[64];
-	snprintf(port_buf, sizeof(port_buf), "< %s: %d >", lang_get(STR_CONTROLLER_PORT), remap_port_sel + 1);
-	y = render_item(x, y, port_buf, menu_sel == 0, false);
-	y += 6.0f;
+	/* Cabeçalho: console emulado + origem dos nomes */
+	snprintf(buf, sizeof(buf), "%s: %s", lang_get(STR_EMULATED_PAD),
+		input_profile_display_name(menu_active_profile()));
+	y = render_item(x, y, buf, false, false);
 
-	/* Button mappings for current port */
-	for (int i = 0; i < REMAP_BUTTONS; i++) {
-		int sel_idx = i + 1;
-		const char *btn_name = retro_button_display_name(remap_port_sel, i);
-		unsigned mapped = remap_get(remap_port_sel, i);
-		const char *phys_name;
+	const char *src = game_profile_active() ? game_profile_name()
+		: (input_desc_available() ? lang_get(STR_SRC_CORE)
+		                          : lang_get(STR_SRC_FALLBACK));
+	snprintf(buf, sizeof(buf), "%s: %s", lang_get(STR_NAME_SOURCE), src);
+	font_render_text(x, y, buf, FONT_COLOR_GRAY, scale * 0.65f, scr_w, scr_h);
+	y += font_text_height(scale) + 8.0f;
 
-		/* L2/R2: por padrão usam gatilhos analógicos, não botões */
-		if (i == RETRO_DEVICE_ID_JOYPAD_L2 && mapped == 0)
-			phys_name = "LT (analog.)";
-		else if (i == RETRO_DEVICE_ID_JOYPAD_R2 && mapped == 0)
-			phys_name = "RT (analog.)";
-		else
-			phys_name = glfw_button_name(mapped);
+	/* Lista rolável: porta + 16 botões + reset + descritores + voltar */
+	int visible = (int)((scr_h * 0.86f - y) / (font_text_height(scale) + 4.0f));
+	if (visible < 4) visible = 4;
+	if (menu_sel < menu_scroll) menu_scroll = menu_sel;
+	if (menu_sel >= menu_scroll + visible) menu_scroll = menu_sel - visible + 1;
+	int end = menu_scroll + visible;
+	if (end > REMAP_TOTAL_ITEMS) end = REMAP_TOTAL_ITEMS;
 
-		char buf[128];
-		if (remap_capturing && remap_capture_button == i && remap_capture_port == remap_port_sel) {
-			snprintf(buf, sizeof(buf), "  %s: %s", btn_name, lang_get(STR_PRESS_BUTTON));
-			y = render_item(x, y, buf, true, false);
-		} else {
-			snprintf(buf, sizeof(buf), "%s -> %s", btn_name, phys_name);
-			y = render_kv_item(x, y, "", buf, menu_sel == sel_idx);
+	for (int item = menu_scroll; item < end; item++) {
+		bool sel = (menu_sel == item);
+		if (item == 0) {
+			snprintf(buf, sizeof(buf), "< %s: %d >",
+				lang_get(STR_CONTROLLER_PORT), remap_port_sel + 1);
+			y = render_item(x, y, buf, sel, false);
+		} else if (item >= 1 && item <= REMAP_BUTTONS) {
+			int id = item - 1;
+			const char *emu = emulated_button_name(remap_port_sel, id);
+			if (remap_capturing && remap_capture_button == id &&
+			    remap_capture_port == remap_port_sel)
+				snprintf(buf, sizeof(buf), "%s -> %s", emu, lang_get(STR_PRESS_BUTTON));
+			else
+				snprintf(buf, sizeof(buf), "%s -> %s", emu,
+					physical_button_name(remap_port_sel, remap_get(remap_port_sel, id)));
+			y = render_item(x, y, buf, sel, false);
+		} else if (item == REMAP_ITEM_RESET) {
+			y = render_item(x, y, lang_get(STR_RESET_DEFAULTS), sel, false);
+		} else if (item == REMAP_ITEM_DESC) {
+			y = render_item(x, y, lang_get(STR_VIEW_DESCRIPTORS), sel, false);
+		} else if (item == REMAP_ITEM_BACK) {
+			y = render_item(x, y, lang_get(STR_BACK), sel, false);
 		}
 	}
 
-	y += 6.0f;
-	y = render_item(x, y, lang_get(STR_RESET_DEFAULTS), menu_sel == REMAP_BUTTONS + 1, false);
-	y = render_item(x, y, lang_get(STR_BACK), menu_sel == REMAP_BUTTONS + 2, false);
-
-	float fy = scr_h * 0.92f;
-	font_render_text(x, fy, lang_get(STR_HINT_INPUT),
-	                 FONT_COLOR_GRAY, scale * 0.65f, scr_w, scr_h);
+	float fy = scr_h * 0.94f;
+	font_render_text(x, fy, lang_get(STR_HINT_INPUT2),
+	                 FONT_COLOR_GRAY, scale * 0.6f, scr_w, scr_h);
 }
 
 static bool input_page_input(void)
 {
-	int total_items = REMAP_BUTTONS + 3; /* port selector + 14 buttons + reset + back */
-
-	/* Remap capture mode */
+	/* Modo de captura de remap */
 	if (remap_capturing) {
 		if (key_pressed(GLFW_KEY_ESCAPE)) {
 			remap_capturing = false;
 			last_input_time = glfwGetTime() + 0.3;
 			return false;
 		}
+		/* Limpar (deixar sem mapeamento) com Backspace/Delete */
+		if (key_pressed(GLFW_KEY_BACKSPACE) || key_pressed(GLFW_KEY_DELETE)) {
+			remap_set(remap_capture_port, remap_capture_button, REMAP_PHYS_NONE);
+			remap_capturing = false;
+			remap_save();
+			last_input_time = glfwGetTime() + 0.3;
+			return false;
+		}
 
-		/* Aguarda 0.4s para garantir que o botão de confirmação foi solto */
+		/* Aguarda soltar o botão de confirmação */
 		if (glfwGetTime() - remap_capture_start < REMAP_CAPTURE_DELAY)
 			return false;
 
-		/* Captura o primeiro botão/gatilho pressionado */
+		/* Captura a primeira entrada física: gatilho LT/RT ou botão. */
 		for (int port = 0; port < MAX_REMAP_PORTS; port++) {
 			if (!glfwJoystickIsGamepad(port)) continue;
 			GLFWgamepadstate pad;
 			if (!glfwGetGamepadState(port, &pad)) continue;
 
-			/* Gatilhos analógicos (LT/RT) */
-			if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] > 0.5f) {
-				remap_set(remap_capture_port, remap_capture_button, 0);
-				remap_capturing = false;
-				remap_save();
-				last_input_time = glfwGetTime() + 0.3;
-				return false;
-			}
-			if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.5f) {
-				remap_set(remap_capture_port, remap_capture_button, 0);
-				remap_capturing = false;
-				remap_save();
-				last_input_time = glfwGetTime() + 0.3;
-				return false;
+			unsigned code = REMAP_PHYS_NONE;
+			if (pad.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER] > 0.5f)
+				code = REMAP_PHYS_LT;
+			else if (pad.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.5f)
+				code = REMAP_PHYS_RT;
+			else {
+				for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; b++)
+					if (pad.buttons[b] == GLFW_PRESS) { code = (unsigned)b; break; }
 			}
 
-			for (int b = 0; b <= GLFW_GAMEPAD_BUTTON_LAST; b++) {
-				if (pad.buttons[b] == GLFW_PRESS) {
-					remap_set(remap_capture_port, remap_capture_button, b);
-					remap_capturing = false;
-					remap_save();
-					last_input_time = glfwGetTime() + 0.3;
-					return false;
-				}
+			if (code != REMAP_PHYS_NONE) {
+				remap_set(remap_capture_port, remap_capture_button, code);
+				remap_capturing = false;
+				remap_save();
+				last_input_time = glfwGetTime() + 0.3;
+				return false;
 			}
 		}
 		return false;
@@ -753,47 +804,101 @@ static bool input_page_input(void)
 
 	if (nav_up() && input_debounce()) {
 		menu_sel--;
-		if (menu_sel < 0) menu_sel = total_items - 1;
+		if (menu_sel < 0) menu_sel = REMAP_TOTAL_ITEMS - 1;
 	}
 	if (nav_down() && input_debounce()) {
 		menu_sel++;
-		if (menu_sel >= total_items) menu_sel = 0;
+		if (menu_sel >= REMAP_TOTAL_ITEMS) menu_sel = 0;
 	}
 
-	/* Port switching with left/right on port selector, or LB/RB anywhere */
+	/* Trocar porta: esq/dir no seletor, ou LB/RB em qualquer lugar */
 	if (menu_sel == 0 && (nav_left() || nav_right()) && input_debounce()) {
 		if (nav_right()) remap_port_sel = (remap_port_sel + 1) % MAX_REMAP_PORTS;
 		else remap_port_sel = (remap_port_sel + MAX_REMAP_PORTS - 1) % MAX_REMAP_PORTS;
 	}
-	if ((pad_button(0, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER) || key_pressed(GLFW_KEY_PAGE_UP)) && input_debounce()) {
+	if ((pad_button(0, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER) || key_pressed(GLFW_KEY_PAGE_UP)) && input_debounce())
 		remap_port_sel = (remap_port_sel + MAX_REMAP_PORTS - 1) % MAX_REMAP_PORTS;
-	}
-	if ((pad_button(0, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER) || key_pressed(GLFW_KEY_PAGE_DOWN)) && input_debounce()) {
+	if ((pad_button(0, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER) || key_pressed(GLFW_KEY_PAGE_DOWN)) && input_debounce())
 		remap_port_sel = (remap_port_sel + 1) % MAX_REMAP_PORTS;
-	}
 
 	if (nav_confirm() && input_debounce()) {
 		if (menu_sel == 0) {
-			/* Port selector — do nothing on confirm, use left/right */
+			/* seletor de porta — usa esq/dir */
 		} else if (menu_sel >= 1 && menu_sel <= REMAP_BUTTONS) {
-			/* Start capture for this button — wait for release first */
 			remap_capturing = true;
 			remap_capture_start = glfwGetTime();
 			remap_capture_port = remap_port_sel;
 			remap_capture_button = menu_sel - 1;
-		} else if (menu_sel == REMAP_BUTTONS + 1) {
-			/* Reset defaults for current port */
+		} else if (menu_sel == REMAP_ITEM_RESET) {
 			remap_reset_defaults(remap_port_sel);
 			remap_save();
-		} else if (menu_sel == REMAP_BUTTONS + 2) {
-			/* Back */
+		} else if (menu_sel == REMAP_ITEM_DESC) {
+			menu_page = MENU_PAGE_DESCRIPTORS;
+			menu_sel = 0;
+			menu_scroll = 0;
+		} else if (menu_sel == REMAP_ITEM_BACK) {
 			menu_page = MENU_PAGE_MAIN;
 			menu_sel = 2;
+			menu_scroll = 0;
 		}
 	}
 	if (nav_back() && input_debounce()) {
 		menu_page = MENU_PAGE_MAIN;
 		menu_sel = 2;
+		menu_scroll = 0;
+	}
+	return false;
+}
+
+/* ── Tela de depuração: descritores informados pelo core ── */
+static void render_page_descriptors(void)
+{
+	float x = scr_w * 0.06f;
+	float y = scr_h * 0.06f;
+	char buf[192];
+
+	y = render_item(x, y, lang_get(STR_DESC_HEADER), false, true);
+	y += 8.0f;
+
+	int count = (int)input_desc_count();
+	if (count == 0) {
+		y = render_item(x, y, lang_get(STR_NO_DESCRIPTORS), false, false);
+		snprintf(buf, sizeof(buf), "%s: %s", lang_get(STR_NAME_SOURCE),
+			input_profile_display_name(menu_active_profile()));
+		render_item(x, y, buf, false, false);
+	} else {
+		int visible = (int)((scr_h * 0.82f - y) / (font_text_height(scale) + 3.0f));
+		if (visible < 1) visible = 1;
+		if (menu_scroll > count - visible) menu_scroll = count - visible;
+		if (menu_scroll < 0) menu_scroll = 0;
+
+		for (int i = menu_scroll; i < count && (i - menu_scroll) < visible; i++) {
+			const struct input_desc_entry *e = input_desc_get((unsigned)i);
+			if (!e) break;
+			snprintf(buf, sizeof(buf), "p%u d%u id=%u  %s",
+				e->port, e->device, e->id, e->description);
+			y = render_item(x, y, buf, false, false);
+		}
+	}
+
+	float fy = scr_h * 0.94f;
+	font_render_text(x, fy, lang_get(STR_HINT_DESCRIPTORS),
+	                 FONT_COLOR_GRAY, scale * 0.62f, scr_w, scr_h);
+}
+
+static bool input_page_descriptors(void)
+{
+	int count = (int)input_desc_count();
+
+	if (nav_up() && input_debounce() && menu_scroll > 0)
+		menu_scroll--;
+	if (nav_down() && input_debounce() && menu_scroll < count - 1)
+		menu_scroll++;
+
+	if ((nav_back() || nav_confirm()) && input_debounce()) {
+		menu_page = MENU_PAGE_INPUT;
+		menu_sel = REMAP_ITEM_DESC;
+		menu_scroll = 0;
 	}
 	return false;
 }
@@ -1145,6 +1250,7 @@ bool menu_input(void)
 		case MENU_PAGE_VIDEO:        return input_page_video();
 		case MENU_PAGE_AUDIO:        return input_page_audio();
 		case MENU_PAGE_INPUT:        return input_page_input();
+		case MENU_PAGE_DESCRIPTORS:  return input_page_descriptors();
 		case MENU_PAGE_CORE_OPTIONS: return input_page_core_options();
 		case MENU_PAGE_ASPECT:       return input_page_aspect();
 		case MENU_PAGE_ASPECT_EDIT:  return input_page_aspect_edit();
@@ -1190,6 +1296,7 @@ void menu_render(void)
 		case MENU_PAGE_VIDEO:        render_page_video(); break;
 		case MENU_PAGE_AUDIO:        render_page_audio(); break;
 		case MENU_PAGE_INPUT:        render_page_input(); break;
+		case MENU_PAGE_DESCRIPTORS:  render_page_descriptors(); break;
 		case MENU_PAGE_CORE_OPTIONS: render_page_core_options(); break;
 		case MENU_PAGE_ASPECT:       render_page_aspect(); break;
 		case MENU_PAGE_ASPECT_EDIT:  render_page_aspect_edit(); break;
