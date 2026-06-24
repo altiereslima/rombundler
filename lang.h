@@ -121,6 +121,23 @@ typedef enum {
 	STR_HINT_DESCRIPTORS,
 	STR_HINT_INPUT2,        /* segunda linha de dica (limpar) */
 
+	/* Novos perfis e botões traduzíveis */
+	STR_PROFILE_MEGADRIVE_3,
+	STR_PROFILE_MEGADRIVE_6,
+	STR_PROFILE_GENERIC,
+	STR_BTN_C_RIGHT,
+	STR_BTN_C_UP,
+	STR_BTN_C_MODE,
+	STR_BTN_L_LIGHT,
+	STR_BTN_R_LIGHT,
+	STR_BTN_COIN,
+	STR_BTN_GATILHO,        /* "%s (gatilho)" */
+	STR_BTN_NONE,           /* "(nenhum)" */
+	STR_BTN_CIRCLE,
+	STR_BTN_SQUARE,
+	STR_BTN_TRIANGLE,
+	STR_BTN_NUMPAD,         /* "Numpad %d" */
+
 	STR_COUNT               /* Total de strings */
 } string_id;
 

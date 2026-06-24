@@ -1,8 +1,8 @@
 /*
- * font.c — Embedded bitmap font renderer for ROMBundler overlay menu.
+ * font.c — TrueType font renderer using stb_truetype for ROMBundler.
  *
- * Renders text using a built-in 8×16 monospace bitmap font for Latin text and
- * a Windows Unicode fallback for scripts outside the embedded atlas.
+ * Renders text using the embedded Cabin-Bold font, baked into a texture atlas at runtime.
+ * Maintains Windows GDI Unicode fallback for characters outside Latin-1.
  */
 
 #include <stdio.h>
@@ -14,126 +14,29 @@
 #include <glad/glad.h>
 
 #include "font.h"
+#include "lang.h"
+#include "cabin_font_data.h"
+
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "stb_truetype.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
 
-#define FONT_CHAR_W 8
-#define FONT_CHAR_H 16
-#define FONT_NUM_CHARS 191
-#define FONT_ATLAS_COLS 16
-#define FONT_ATLAS_ROWS ((FONT_NUM_CHARS + FONT_ATLAS_COLS - 1) / FONT_ATLAS_COLS)
-#define FONT_ATLAS_W (FONT_ATLAS_COLS * FONT_CHAR_W)
-#define FONT_ATLAS_H (FONT_ATLAS_ROWS * FONT_CHAR_H)
+#define FONT_CHAR_W 10
+#define FONT_CHAR_H 22
 
-#include "font_ext.h"
+/* Texture atlas size */
+#define ATLAS_W 1024
+#define ATLAS_H 512
 
-
-/* Classic 8x16 bitmap font data - covers ASCII 32-126.
- * Each character is 16 bytes (one byte per scanline, 8 bits wide).
- * This is a standard VGA/BIOS-style font. */
-static const unsigned char font_data[FONT_NUM_CHARS][FONT_CHAR_H] = {
-	/* 32 ' ' */ {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 33 '!' */ {0x00,0x00,0x18,0x3C,0x3C,0x3C,0x18,0x18,0x18,0x00,0x18,0x18,0x00,0x00,0x00,0x00},
-	/* 34 '"' */ {0x00,0x66,0x66,0x66,0x24,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 35 '#' */ {0x00,0x00,0x00,0x6C,0x6C,0xFE,0x6C,0x6C,0x6C,0xFE,0x6C,0x6C,0x00,0x00,0x00,0x00},
-	/* 36 '$' */ {0x18,0x18,0x7C,0xC6,0xC2,0xC0,0x7C,0x06,0x06,0x86,0xC6,0x7C,0x18,0x18,0x00,0x00},
-	/* 37 '%' */ {0x00,0x00,0x00,0x00,0xC2,0xC6,0x0C,0x18,0x30,0x60,0xC6,0x86,0x00,0x00,0x00,0x00},
-	/* 38 '&' */ {0x00,0x00,0x38,0x6C,0x6C,0x38,0x76,0xDC,0xCC,0xCC,0xCC,0x76,0x00,0x00,0x00,0x00},
-	/* 39 ''' */ {0x00,0x30,0x30,0x30,0x60,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 40 '(' */ {0x00,0x00,0x0C,0x18,0x30,0x30,0x30,0x30,0x30,0x30,0x18,0x0C,0x00,0x00,0x00,0x00},
-	/* 41 ')' */ {0x00,0x00,0x30,0x18,0x0C,0x0C,0x0C,0x0C,0x0C,0x0C,0x18,0x30,0x00,0x00,0x00,0x00},
-	/* 42 '*' */ {0x00,0x00,0x00,0x00,0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 43 '+' */ {0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x7E,0x18,0x18,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 44 ',' */ {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x18,0x30,0x00,0x00,0x00},
-	/* 45 '-' */ {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFE,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 46 '.' */ {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00},
-	/* 47 '/' */ {0x00,0x00,0x00,0x00,0x02,0x06,0x0C,0x18,0x30,0x60,0xC0,0x80,0x00,0x00,0x00,0x00},
-	/* 48 '0' */ {0x00,0x00,0x7C,0xC6,0xC6,0xCE,0xDE,0xF6,0xE6,0xC6,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/* 49 '1' */ {0x00,0x00,0x18,0x38,0x78,0x18,0x18,0x18,0x18,0x18,0x18,0x7E,0x00,0x00,0x00,0x00},
-	/* 50 '2' */ {0x00,0x00,0x7C,0xC6,0x06,0x0C,0x18,0x30,0x60,0xC0,0xC6,0xFE,0x00,0x00,0x00,0x00},
-	/* 51 '3' */ {0x00,0x00,0x7C,0xC6,0x06,0x06,0x3C,0x06,0x06,0x06,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/* 52 '4' */ {0x00,0x00,0x0C,0x1C,0x3C,0x6C,0xCC,0xFE,0x0C,0x0C,0x0C,0x1E,0x00,0x00,0x00,0x00},
-	/* 53 '5' */ {0x00,0x00,0xFE,0xC0,0xC0,0xC0,0xFC,0x06,0x06,0x06,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/* 54 '6' */ {0x00,0x00,0x38,0x60,0xC0,0xC0,0xFC,0xC6,0xC6,0xC6,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/* 55 '7' */ {0x00,0x00,0xFE,0xC6,0x06,0x06,0x0C,0x18,0x30,0x30,0x30,0x30,0x00,0x00,0x00,0x00},
-	/* 56 '8' */ {0x00,0x00,0x7C,0xC6,0xC6,0xC6,0x7C,0xC6,0xC6,0xC6,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/* 57 '9' */ {0x00,0x00,0x7C,0xC6,0xC6,0xC6,0x7E,0x06,0x06,0x06,0x0C,0x78,0x00,0x00,0x00,0x00},
-	/* 58 ':' */ {0x00,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x00,0x00},
-	/* 59 ';' */ {0x00,0x00,0x00,0x00,0x18,0x18,0x00,0x00,0x00,0x18,0x18,0x30,0x00,0x00,0x00,0x00},
-	/* 60 '<' */ {0x00,0x00,0x00,0x06,0x0C,0x18,0x30,0x60,0x30,0x18,0x0C,0x06,0x00,0x00,0x00,0x00},
-	/* 61 '=' */ {0x00,0x00,0x00,0x00,0x00,0x7E,0x00,0x00,0x7E,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 62 '>' */ {0x00,0x00,0x00,0x60,0x30,0x18,0x0C,0x06,0x0C,0x18,0x30,0x60,0x00,0x00,0x00,0x00},
-	/* 63 '?' */ {0x00,0x00,0x7C,0xC6,0xC6,0x0C,0x18,0x18,0x18,0x00,0x18,0x18,0x00,0x00,0x00,0x00},
-	/* 64 '@' */ {0x00,0x00,0x00,0x7C,0xC6,0xC6,0xDE,0xDE,0xDE,0xDC,0xC0,0x7C,0x00,0x00,0x00,0x00},
-	/* 65 'A' */ {0x00,0x00,0x10,0x38,0x6C,0xC6,0xC6,0xFE,0xC6,0xC6,0xC6,0xC6,0x00,0x00,0x00,0x00},
-	/* 66 'B' */ {0x00,0x00,0xFC,0x66,0x66,0x66,0x7C,0x66,0x66,0x66,0x66,0xFC,0x00,0x00,0x00,0x00},
-	/* 67 'C' */ {0x00,0x00,0x3C,0x66,0xC2,0xC0,0xC0,0xC0,0xC0,0xC2,0x66,0x3C,0x00,0x00,0x00,0x00},
-	/* 68 'D' */ {0x00,0x00,0xF8,0x6C,0x66,0x66,0x66,0x66,0x66,0x66,0x6C,0xF8,0x00,0x00,0x00,0x00},
-	/* 69 'E' */ {0x00,0x00,0xFE,0x66,0x62,0x68,0x78,0x68,0x60,0x62,0x66,0xFE,0x00,0x00,0x00,0x00},
-	/* 70 'F' */ {0x00,0x00,0xFE,0x66,0x62,0x68,0x78,0x68,0x60,0x60,0x60,0xF0,0x00,0x00,0x00,0x00},
-	/* 71 'G' */ {0x00,0x00,0x3C,0x66,0xC2,0xC0,0xC0,0xDE,0xC6,0xC6,0x66,0x3A,0x00,0x00,0x00,0x00},
-	/* 72 'H' */ {0x00,0x00,0xC6,0xC6,0xC6,0xC6,0xFE,0xC6,0xC6,0xC6,0xC6,0xC6,0x00,0x00,0x00,0x00},
-	/* 73 'I' */ {0x00,0x00,0x3C,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00},
-	/* 74 'J' */ {0x00,0x00,0x1E,0x0C,0x0C,0x0C,0x0C,0x0C,0xCC,0xCC,0xCC,0x78,0x00,0x00,0x00,0x00},
-	/* 75 'K' */ {0x00,0x00,0xE6,0x66,0x66,0x6C,0x78,0x78,0x6C,0x66,0x66,0xE6,0x00,0x00,0x00,0x00},
-	/* 76 'L' */ {0x00,0x00,0xF0,0x60,0x60,0x60,0x60,0x60,0x60,0x62,0x66,0xFE,0x00,0x00,0x00,0x00},
-	/* 77 'M' */ {0x00,0x00,0xC6,0xEE,0xFE,0xFE,0xD6,0xC6,0xC6,0xC6,0xC6,0xC6,0x00,0x00,0x00,0x00},
-	/* 78 'N' */ {0x00,0x00,0xC6,0xE6,0xF6,0xFE,0xDE,0xCE,0xC6,0xC6,0xC6,0xC6,0x00,0x00,0x00,0x00},
-	/* 79 'O' */ {0x00,0x00,0x7C,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/* 80 'P' */ {0x00,0x00,0xFC,0x66,0x66,0x66,0x7C,0x60,0x60,0x60,0x60,0xF0,0x00,0x00,0x00,0x00},
-	/* 81 'Q' */ {0x00,0x00,0x7C,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xD6,0xDE,0x7C,0x0C,0x0E,0x00,0x00},
-	/* 82 'R' */ {0x00,0x00,0xFC,0x66,0x66,0x66,0x7C,0x6C,0x66,0x66,0x66,0xE6,0x00,0x00,0x00,0x00},
-	/* 83 'S' */ {0x00,0x00,0x7C,0xC6,0xC6,0x60,0x38,0x0C,0x06,0xC6,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/* 84 'T' */ {0x00,0x00,0xFF,0xDB,0x99,0x18,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00},
-	/* 85 'U' */ {0x00,0x00,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/* 86 'V' */ {0x00,0x00,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0x6C,0x38,0x10,0x00,0x00,0x00,0x00},
-	/* 87 'W' */ {0x00,0x00,0xC6,0xC6,0xC6,0xC6,0xD6,0xD6,0xD6,0xFE,0xEE,0x6C,0x00,0x00,0x00,0x00},
-	/* 88 'X' */ {0x00,0x00,0xC6,0xC6,0x6C,0x7C,0x38,0x38,0x7C,0x6C,0xC6,0xC6,0x00,0x00,0x00,0x00},
-	/* 89 'Y' */ {0x00,0x00,0xC6,0xC6,0xC6,0x6C,0x38,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00},
-	/* 90 'Z' */ {0x00,0x00,0xFE,0xC6,0x86,0x0C,0x18,0x30,0x60,0xC2,0xC6,0xFE,0x00,0x00,0x00,0x00},
-	/* 91 '[' */ {0x00,0x00,0x3C,0x30,0x30,0x30,0x30,0x30,0x30,0x30,0x30,0x3C,0x00,0x00,0x00,0x00},
-	/* 92 '\' */ {0x00,0x00,0x00,0x80,0xC0,0xE0,0x70,0x38,0x1C,0x0E,0x06,0x02,0x00,0x00,0x00,0x00},
-	/* 93 ']' */ {0x00,0x00,0x3C,0x0C,0x0C,0x0C,0x0C,0x0C,0x0C,0x0C,0x0C,0x3C,0x00,0x00,0x00,0x00},
-	/* 94 '^' */ {0x10,0x38,0x6C,0xC6,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 95 '_' */ {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF,0x00,0x00},
-	/* 96 '`' */ {0x30,0x30,0x18,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-	/* 97 'a' */ {0x00,0x00,0x00,0x00,0x00,0x78,0x0C,0x7C,0xCC,0xCC,0xCC,0x76,0x00,0x00,0x00,0x00},
-	/* 98 'b' */ {0x00,0x00,0xE0,0x60,0x60,0x78,0x6C,0x66,0x66,0x66,0x66,0x7C,0x00,0x00,0x00,0x00},
-	/* 99 'c' */ {0x00,0x00,0x00,0x00,0x00,0x7C,0xC6,0xC0,0xC0,0xC0,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/*100 'd' */ {0x00,0x00,0x1C,0x0C,0x0C,0x3C,0x6C,0xCC,0xCC,0xCC,0xCC,0x76,0x00,0x00,0x00,0x00},
-	/*101 'e' */ {0x00,0x00,0x00,0x00,0x00,0x7C,0xC6,0xFE,0xC0,0xC0,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/*102 'f' */ {0x00,0x00,0x1C,0x36,0x32,0x30,0x78,0x30,0x30,0x30,0x30,0x78,0x00,0x00,0x00,0x00},
-	/*103 'g' */ {0x00,0x00,0x00,0x00,0x00,0x76,0xCC,0xCC,0xCC,0xCC,0xCC,0x7C,0x0C,0xCC,0x78,0x00},
-	/*104 'h' */ {0x00,0x00,0xE0,0x60,0x60,0x6C,0x76,0x66,0x66,0x66,0x66,0xE6,0x00,0x00,0x00,0x00},
-	/*105 'i' */ {0x00,0x00,0x18,0x18,0x00,0x38,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00},
-	/*106 'j' */ {0x00,0x00,0x06,0x06,0x00,0x0E,0x06,0x06,0x06,0x06,0x06,0x06,0x66,0x66,0x3C,0x00},
-	/*107 'k' */ {0x00,0x00,0xE0,0x60,0x60,0x66,0x6C,0x78,0x78,0x6C,0x66,0xE6,0x00,0x00,0x00,0x00},
-	/*108 'l' */ {0x00,0x00,0x38,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,0x00,0x00,0x00},
-	/*109 'm' */ {0x00,0x00,0x00,0x00,0x00,0xEC,0xFE,0xD6,0xD6,0xD6,0xD6,0xC6,0x00,0x00,0x00,0x00},
-	/*110 'n' */ {0x00,0x00,0x00,0x00,0x00,0xDC,0x66,0x66,0x66,0x66,0x66,0x66,0x00,0x00,0x00,0x00},
-	/*111 'o' */ {0x00,0x00,0x00,0x00,0x00,0x7C,0xC6,0xC6,0xC6,0xC6,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/*112 'p' */ {0x00,0x00,0x00,0x00,0x00,0xDC,0x66,0x66,0x66,0x66,0x66,0x7C,0x60,0x60,0xF0,0x00},
-	/*113 'q' */ {0x00,0x00,0x00,0x00,0x00,0x76,0xCC,0xCC,0xCC,0xCC,0xCC,0x7C,0x0C,0x0C,0x1E,0x00},
-	/*114 'r' */ {0x00,0x00,0x00,0x00,0x00,0xDC,0x76,0x66,0x60,0x60,0x60,0xF0,0x00,0x00,0x00,0x00},
-	/*115 's' */ {0x00,0x00,0x00,0x00,0x00,0x7C,0xC6,0x60,0x38,0x0C,0xC6,0x7C,0x00,0x00,0x00,0x00},
-	/*116 't' */ {0x00,0x00,0x10,0x30,0x30,0xFC,0x30,0x30,0x30,0x30,0x36,0x1C,0x00,0x00,0x00,0x00},
-	/*117 'u' */ {0x00,0x00,0x00,0x00,0x00,0xCC,0xCC,0xCC,0xCC,0xCC,0xCC,0x76,0x00,0x00,0x00,0x00},
-	/*118 'v' */ {0x00,0x00,0x00,0x00,0x00,0xC6,0xC6,0xC6,0xC6,0x6C,0x38,0x10,0x00,0x00,0x00,0x00},
-	/*119 'w' */ {0x00,0x00,0x00,0x00,0x00,0xC6,0xC6,0xD6,0xD6,0xD6,0xFE,0x6C,0x00,0x00,0x00,0x00},
-	/*120 'x' */ {0x00,0x00,0x00,0x00,0x00,0xC6,0x6C,0x38,0x38,0x38,0x6C,0xC6,0x00,0x00,0x00,0x00},
-	/*121 'y' */ {0x00,0x00,0x00,0x00,0x00,0xC6,0xC6,0xC6,0xC6,0xC6,0xC6,0x7E,0x06,0x0C,0xF8,0x00},
-	/*122 'z' */ {0x00,0x00,0x00,0x00,0x00,0xFE,0xCC,0x18,0x30,0x60,0xC6,0xFE,0x00,0x00,0x00,0x00},
-	/*123 '{' */ {0x00,0x00,0x0E,0x18,0x18,0x18,0x70,0x18,0x18,0x18,0x18,0x0E,0x00,0x00,0x00,0x00},
-	/*124 '|' */ {0x00,0x00,0x18,0x18,0x18,0x18,0x00,0x18,0x18,0x18,0x18,0x18,0x00,0x00,0x00,0x00},
-	/*125 '}' */ {0x00,0x00,0x70,0x18,0x18,0x18,0x0E,0x18,0x18,0x18,0x18,0x70,0x00,0x00,0x00,0x00},
-	/*126 '~' */ {0x00,0x00,0x76,0xDC,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
-};
+/* Baked character data for codepoints 32 to 255 (224 characters) */
+static stbtt_bakedchar chardata[224];
+static unsigned char *temp_bitmap = NULL;
 
 static GLuint font_tex = 0;
-static GLuint font_unicode_tex = 0;
 static GLuint font_shader = 0;
 static GLuint font_vao = 0;
 static GLuint font_vbo = 0;
@@ -141,6 +44,126 @@ static GLint font_u_tex = -1;
 static GLint font_u_color = -1;
 static GLint font_i_pos = -1;
 static GLint font_i_coord = -1;
+
+#ifdef _WIN32
+static char *font_strdup(const char *s)
+{
+	size_t len = strlen(s);
+	char *d = (char *)malloc(len + 1);
+	if (d) {
+		strcpy(d, s);
+	}
+	return d;
+}
+
+typedef struct {
+	char *text;
+	float scale;
+	int width;
+	int height;
+	GLuint gl_tex;
+	unsigned char *alpha;
+	uint32_t last_used;
+} unicode_cache_entry_t;
+
+#define UNICODE_CACHE_MAX 128
+static unicode_cache_entry_t unicode_cache[UNICODE_CACHE_MAX];
+static int unicode_cache_count = 0;
+static uint32_t unicode_cache_timer = 0;
+
+void font_clear_unicode_cache(void)
+{
+	for (int i = 0; i < unicode_cache_count; i++) {
+		if (unicode_cache[i].text) {
+			free(unicode_cache[i].text);
+			unicode_cache[i].text = NULL;
+		}
+		if (unicode_cache[i].gl_tex) {
+			glDeleteTextures(1, &unicode_cache[i].gl_tex);
+			unicode_cache[i].gl_tex = 0;
+		}
+		if (unicode_cache[i].alpha) {
+			free(unicode_cache[i].alpha);
+			unicode_cache[i].alpha = NULL;
+		}
+	}
+	memset(unicode_cache, 0, sizeof(unicode_cache));
+	unicode_cache_count = 0;
+	unicode_cache_timer = 0;
+}
+
+static unicode_cache_entry_t *find_unicode_cache_entry(const char *text, float scale)
+{
+	for (int i = 0; i < unicode_cache_count; i++) {
+		if (unicode_cache[i].scale == scale && strcmp(unicode_cache[i].text, text) == 0) {
+			unicode_cache[i].last_used = ++unicode_cache_timer;
+			return &unicode_cache[i];
+		}
+	}
+	return NULL;
+}
+
+static unicode_cache_entry_t *insert_unicode_cache_entry(const char *text, float scale, int width, int height, GLuint gl_tex, unsigned char *alpha)
+{
+	unicode_cache_timer++;
+
+	unicode_cache_entry_t *existing = find_unicode_cache_entry(text, scale);
+	if (existing) {
+		existing->width = width;
+		existing->height = height;
+		if (gl_tex) {
+			if (existing->gl_tex) glDeleteTextures(1, &existing->gl_tex);
+			existing->gl_tex = gl_tex;
+		}
+		if (alpha) {
+			if (existing->alpha) free(existing->alpha);
+			existing->alpha = alpha;
+		}
+		return existing;
+	}
+
+	if (unicode_cache_count < UNICODE_CACHE_MAX) {
+		int idx = unicode_cache_count++;
+		unicode_cache[idx].text = font_strdup(text);
+		unicode_cache[idx].scale = scale;
+		unicode_cache[idx].width = width;
+		unicode_cache[idx].height = height;
+		unicode_cache[idx].gl_tex = gl_tex;
+		unicode_cache[idx].alpha = alpha;
+		unicode_cache[idx].last_used = unicode_cache_timer;
+		return &unicode_cache[idx];
+	}
+
+	int lru_idx = 0;
+	uint32_t min_time = unicode_cache[0].last_used;
+	for (int i = 1; i < unicode_cache_count; i++) {
+		if (unicode_cache[i].last_used < min_time) {
+			min_time = unicode_cache[i].last_used;
+			lru_idx = i;
+		}
+	}
+
+	if (unicode_cache[lru_idx].text) {
+		free(unicode_cache[lru_idx].text);
+	}
+	if (unicode_cache[lru_idx].gl_tex) {
+		glDeleteTextures(1, &unicode_cache[lru_idx].gl_tex);
+	}
+	if (unicode_cache[lru_idx].alpha) {
+		free(unicode_cache[lru_idx].alpha);
+	}
+
+	unicode_cache[lru_idx].text = font_strdup(text);
+	unicode_cache[lru_idx].scale = scale;
+	unicode_cache[lru_idx].width = width;
+	unicode_cache[lru_idx].height = height;
+	unicode_cache[lru_idx].gl_tex = gl_tex;
+	unicode_cache[lru_idx].alpha = alpha;
+	unicode_cache[lru_idx].last_used = unicode_cache_timer;
+
+	return &unicode_cache[lru_idx];
+}
+#endif
 
 static const char *font_vsrc =
 	"attribute vec4 i_pos;\n"
@@ -206,8 +229,7 @@ static int utf8_next_codepoint(const unsigned char **ptr)
 
 static bool atlas_supports_codepoint(int codepoint)
 {
-	return (codepoint >= 32 && codepoint <= 126) ||
-	       (codepoint >= 160 && codepoint <= 255);
+	return codepoint >= 32 && codepoint <= 255;
 }
 
 static bool font_needs_unicode_fallback(const char *text)
@@ -221,17 +243,6 @@ static bool font_needs_unicode_fallback(const char *text)
 	}
 
 	return false;
-}
-
-static const unsigned char *font_glyph_rows(int idx)
-{
-	if (idx < 0 || idx >= FONT_NUM_CHARS)
-		return NULL;
-
-	if (idx < 95)
-		return font_data[idx];
-
-	return font_data_ext[idx - 95];
 }
 
 /* ─── Software rendering target (Vulkan menu overlay) ─── */
@@ -249,12 +260,6 @@ void font_set_sw_target(uint32_t *buf, int w, int h)
 void font_clear_sw_target(void)
 {
 	font_sw_buf = NULL;
-}
-
-static inline void sw_put_pixel(int x, int y, uint32_t color)
-{
-	if (x >= 0 && x < font_sw_w && y >= 0 && y < font_sw_h)
-		font_sw_buf[y * font_sw_w + x] = color;
 }
 
 static inline void sw_blend_pixel(int x, int y, font_color color, unsigned char coverage)
@@ -300,43 +305,39 @@ static inline void sw_blend_pixel(int x, int y, font_color color, unsigned char 
 static void font_render_text_sw(float x, float y, const char *text,
                                 font_color color, float scale)
 {
-	if (!text || !text[0]) return;
+	if (!text || !text[0] || !temp_bitmap) return;
 
-	uint32_t pixel = ((uint32_t)(color.b * 255.0f))       |
-	                 ((uint32_t)(color.g * 255.0f) << 8)   |
-	                 ((uint32_t)(color.r * 255.0f) << 16)  |
-	                 ((uint32_t)(color.a * 255.0f) << 24);
-
+	float factor = (22.0f * scale) / 48.0f;
+	float baseline_offset = 34.0f * factor;
 	float cx = x;
-	float cw = FONT_CHAR_W * scale;
-	float ch = FONT_CHAR_H * scale;
 
 	for (const unsigned char *p = (const unsigned char *)text; *p;) {
 		int codepoint = utf8_next_codepoint(&p);
-		int idx = -1;
-		const unsigned char *glyph_rows;
+		if (!atlas_supports_codepoint(codepoint))
+			codepoint = '?';
 
-		if (codepoint >= 32 && codepoint <= 126)
-			idx = codepoint - 32;
-		else if (codepoint >= 160 && codepoint <= 255)
-			idx = 95 + (codepoint - 160);
+		int idx = codepoint - 32;
+		int src_w = chardata[idx].x1 - chardata[idx].x0;
+		int src_h = chardata[idx].y1 - chardata[idx].y0;
+		int dst_w = (int)(src_w * factor + 0.5f);
+		int dst_h = (int)(src_h * factor + 0.5f);
 
-		glyph_rows = font_glyph_rows(idx);
-		if (glyph_rows) {
-			int icw = (int)(cw + 0.5f);
-			int ich = (int)(ch + 0.5f);
-			for (int row = 0; row < ich; row++) {
-				int src_row = row * FONT_CHAR_H / ich;
-				if (src_row >= FONT_CHAR_H) src_row = FONT_CHAR_H - 1;
-				unsigned char bits = glyph_rows[src_row];
-				for (int col = 0; col < icw; col++) {
-					int src_col = col * FONT_CHAR_W / icw;
-					if (bits & (0x80 >> src_col))
-						sw_put_pixel((int)cx + col, (int)y + row, pixel);
+		float x_start = cx + chardata[idx].xoff * factor;
+		float y_start = y + baseline_offset + chardata[idx].yoff * factor;
+
+		if (dst_w > 0 && dst_h > 0) {
+			for (int dy = 0; dy < dst_h; dy++) {
+				int sy = dy * src_h / dst_h;
+				int src_y = chardata[idx].y0 + sy;
+				for (int dx = 0; dx < dst_w; dx++) {
+					int sx = dx * src_w / dst_w;
+					int src_x = chardata[idx].x0 + sx;
+					unsigned char coverage = temp_bitmap[src_y * ATLAS_W + src_x];
+					sw_blend_pixel((int)x_start + dx, (int)y_start + dy, color, coverage);
 				}
 			}
 		}
-		cx += cw;
+		cx += chardata[idx].xadvance * factor;
 	}
 }
 
@@ -348,92 +349,122 @@ static bool font_measure_unicode_text(const char *text, float scale, int *out_w,
 static void font_render_unicode_text_sw(float x, float y, const char *text,
                                         font_color color, float scale)
 {
-	wchar_t *wide = font_utf8_to_wide(text);
-	HDC dc = NULL;
-	HFONT font = NULL;
-	HGDIOBJ old_font = NULL;
-	HBITMAP bmp = NULL;
-	HGDIOBJ old_bmp = NULL;
-	BITMAPINFO bi;
-	void *bits = NULL;
+	unicode_cache_entry_t *entry = find_unicode_cache_entry(text, scale);
+	unsigned char *alpha = NULL;
 	int tex_w = 0;
 	int tex_h = 0;
 
-	if (!font_sw_buf || !wide)
-		goto cleanup;
+	if (entry) {
+		alpha = entry->alpha;
+		tex_w = entry->width;
+		tex_h = entry->height;
+	} else {
+		wchar_t *wide = font_utf8_to_wide(text);
+		HDC dc = NULL;
+		HFONT font = NULL;
+		HGDIOBJ old_font = NULL;
+		HBITMAP bmp = NULL;
+		HGDIOBJ old_bmp = NULL;
+		BITMAPINFO bi;
+		void *bits = NULL;
 
-	if (!font_measure_unicode_text(text, scale, &tex_w, &tex_h))
-		goto cleanup;
+		if (!font_sw_buf || !wide)
+			return;
 
-	dc = CreateCompatibleDC(NULL);
-	if (!dc)
-		goto cleanup;
-
-	font = font_create_unicode_font(scale);
-	if (!font)
-		goto cleanup;
-
-	memset(&bi, 0, sizeof(bi));
-	bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-	bi.bmiHeader.biWidth = tex_w;
-	bi.bmiHeader.biHeight = -tex_h;
-	bi.bmiHeader.biPlanes = 1;
-	bi.bmiHeader.biBitCount = 32;
-	bi.bmiHeader.biCompression = BI_RGB;
-
-	bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-	if (!bmp || !bits)
-		goto cleanup;
-
-	old_bmp = SelectObject(dc, bmp);
-	old_font = SelectObject(dc, font);
-
-	SetBkMode(dc, OPAQUE);
-	SetBkColor(dc, RGB(0, 0, 0));
-	SetTextColor(dc, RGB(255, 255, 255));
-
-	{
-		RECT rect = {0, 0, tex_w, tex_h};
-		HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
-		if (brush) {
-			FillRect(dc, &rect, brush);
-			DeleteObject(brush);
+		if (!font_measure_unicode_text(text, scale, &tex_w, &tex_h)) {
+			free(wide);
+			return;
 		}
-		rect.left = 1;
-		rect.top = 1;
-		DrawTextW(dc, wide, -1, &rect, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-	}
 
-	{
-		const unsigned char *src = (const unsigned char *)bits;
-		int base_x = (int)x;
-		int base_y = (int)y;
-		for (int yy = 0; yy < tex_h; yy++) {
-			for (int xx = 0; xx < tex_w; xx++) {
-				int i = yy * tex_w + xx;
+		dc = CreateCompatibleDC(NULL);
+		if (!dc)
+			goto cleanup_gdi;
+
+		font = font_create_unicode_font(scale);
+		if (!font)
+			goto cleanup_gdi;
+
+		memset(&bi, 0, sizeof(bi));
+		bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		bi.bmiHeader.biWidth = tex_w;
+		bi.bmiHeader.biHeight = -tex_h;
+		bi.bmiHeader.biPlanes = 1;
+		bi.bmiHeader.biBitCount = 32;
+		bi.bmiHeader.biCompression = BI_RGB;
+
+		bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+		if (!bmp || !bits)
+			goto cleanup_gdi;
+
+		old_bmp = SelectObject(dc, bmp);
+		old_font = SelectObject(dc, font);
+
+		SetBkMode(dc, OPAQUE);
+		SetBkColor(dc, RGB(0, 0, 0));
+		SetTextColor(dc, RGB(255, 255, 255));
+
+		{
+			RECT rect = {0, 0, tex_w, tex_h};
+			HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
+			if (brush) {
+				FillRect(dc, &rect, brush);
+				DeleteObject(brush);
+			}
+			rect.left = 1;
+			rect.top = 1;
+			DrawTextW(dc, wide, -1, &rect, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+		}
+
+		GdiFlush();
+
+		if (old_bmp) {
+			SelectObject(dc, old_bmp);
+			old_bmp = NULL;
+		}
+
+		alpha = (unsigned char *)malloc((size_t)(tex_w * tex_h));
+		if (alpha) {
+			const unsigned char *src = (const unsigned char *)bits;
+			for (int i = 0; i < tex_w * tex_h; i++) {
 				unsigned char b = src[i * 4 + 0];
 				unsigned char g = src[i * 4 + 1];
 				unsigned char r = src[i * 4 + 2];
 				unsigned char a = r;
 				if (g > a) a = g;
 				if (b > a) a = b;
-				sw_blend_pixel(base_x + xx, base_y + yy, color, a);
+				alpha[i] = a;
 			}
+
+			unicode_cache_entry_t *new_entry = insert_unicode_cache_entry(text, scale, tex_w, tex_h, 0, alpha);
+			alpha = new_entry->alpha;
 		}
+
+	cleanup_gdi:
+		if (old_bmp)
+			SelectObject(dc, old_bmp);
+		if (old_font)
+			SelectObject(dc, old_font);
+		if (bmp)
+			DeleteObject(bmp);
+		if (font)
+			DeleteObject(font);
+		if (dc)
+			DeleteDC(dc);
+		free(wide);
+
+		if (!alpha)
+			return;
 	}
 
-cleanup:
-	if (old_bmp)
-		SelectObject(dc, old_bmp);
-	if (old_font)
-		SelectObject(dc, old_font);
-	if (bmp)
-		DeleteObject(bmp);
-	if (font)
-		DeleteObject(font);
-	if (dc)
-		DeleteDC(dc);
-	free(wide);
+	int base_x = (int)x;
+	int base_y = (int)y;
+	for (int yy = 0; yy < tex_h; yy++) {
+		for (int xx = 0; xx < tex_w; xx++) {
+			int i = yy * tex_w + xx;
+			unsigned char a = alpha[i];
+			sw_blend_pixel(base_x + xx, base_y + yy, color, a);
+		}
+	}
 }
 
 static wchar_t *font_utf8_to_wide(const char *text)
@@ -467,11 +498,22 @@ static HFONT font_create_unicode_font(float scale)
 	if (pixel_height < FONT_CHAR_H)
 		pixel_height = FONT_CHAR_H;
 
+	const wchar_t *face = L"Segoe UI";
+	DWORD charset = DEFAULT_CHARSET;
+
+	if (lang_current() == LANG_ZH) {
+		face = L"Microsoft YaHei";
+		charset = GB2312_CHARSET;
+	} else if (lang_current() == LANG_HI) {
+		face = L"Nirmala UI";
+		charset = DEFAULT_CHARSET;
+	}
+
 	return CreateFontW(-pixel_height, 0, 0, 0, FW_NORMAL,
-	                   FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+	                   FALSE, FALSE, FALSE, charset,
 	                   OUT_OUTLINE_PRECIS, CLIP_DEFAULT_PRECIS,
 	                   ANTIALIASED_QUALITY,
-	                   DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+	                   DEFAULT_PITCH | FF_DONTCARE, face);
 }
 
 static bool font_measure_unicode_text(const char *text, float scale, int *out_w, int *out_h)
@@ -532,149 +574,167 @@ static void font_render_unicode_text(float x, float y, const char *text,
                                      font_color color, float scale,
                                      int screen_w, int screen_h)
 {
-	wchar_t *wide = font_utf8_to_wide(text);
-	HDC dc = NULL;
-	HFONT font = NULL;
-	HGDIOBJ old_font = NULL;
-	HBITMAP bmp = NULL;
-	HGDIOBJ old_bmp = NULL;
-	BITMAPINFO bi;
-	void *bits = NULL;
-	unsigned char *alpha = NULL;
+	unicode_cache_entry_t *entry = find_unicode_cache_entry(text, scale);
+	GLuint gl_tex = 0;
 	int tex_w = 0;
 	int tex_h = 0;
-	bool should_render = false;
 
-	if (!wide)
-		return;
+	if (entry) {
+		gl_tex = entry->gl_tex;
+		tex_w = entry->width;
+		tex_h = entry->height;
+	} else {
+		wchar_t *wide = font_utf8_to_wide(text);
+		HDC dc = NULL;
+		HFONT font = NULL;
+		HGDIOBJ old_font = NULL;
+		HBITMAP bmp = NULL;
+		HGDIOBJ old_bmp = NULL;
+		BITMAPINFO bi;
+		void *bits = NULL;
+		unsigned char *alpha = NULL;
 
-	if (!font_measure_unicode_text(text, scale, &tex_w, &tex_h))
-		goto cleanup;
+		if (!wide)
+			return;
 
-	dc = CreateCompatibleDC(NULL);
-	if (!dc)
-		goto cleanup;
-
-	font = font_create_unicode_font(scale);
-	if (!font)
-		goto cleanup;
-
-	memset(&bi, 0, sizeof(bi));
-	bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-	bi.bmiHeader.biWidth = tex_w;
-	bi.bmiHeader.biHeight = -tex_h;
-	bi.bmiHeader.biPlanes = 1;
-	bi.bmiHeader.biBitCount = 32;
-	bi.bmiHeader.biCompression = BI_RGB;
-
-	bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
-	if (!bmp || !bits)
-		goto cleanup;
-
-	old_bmp = SelectObject(dc, bmp);
-	old_font = SelectObject(dc, font);
-
-	SetBkMode(dc, OPAQUE);
-	SetBkColor(dc, RGB(0, 0, 0));
-	SetTextColor(dc, RGB(255, 255, 255));
-
-	{
-		RECT rect = {0, 0, tex_w, tex_h};
-		HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
-		if (brush) {
-			FillRect(dc, &rect, brush);
-			DeleteObject(brush);
+		if (!font_measure_unicode_text(text, scale, &tex_w, &tex_h)) {
+			free(wide);
+			return;
 		}
-		rect.left = 1;
-		rect.top = 1;
-		DrawTextW(dc, wide, -1, &rect, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-	}
 
-	alpha = (unsigned char *)malloc((size_t)tex_w * (size_t)tex_h);
-	if (!alpha)
-		goto cleanup;
+		dc = CreateCompatibleDC(NULL);
+		if (!dc)
+			goto cleanup_gdi;
 
-	{
-		const unsigned char *src = (const unsigned char *)bits;
-		for (int i = 0; i < tex_w * tex_h; i++) {
-			unsigned char b = src[i * 4 + 0];
-			unsigned char g = src[i * 4 + 1];
-			unsigned char r = src[i * 4 + 2];
-			unsigned char a = r;
-			if (g > a) a = g;
-			if (b > a) a = b;
-			alpha[i] = a;
+		font = font_create_unicode_font(scale);
+		if (!font)
+			goto cleanup_gdi;
+
+		memset(&bi, 0, sizeof(bi));
+		bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+		bi.bmiHeader.biWidth = tex_w;
+		bi.bmiHeader.biHeight = -tex_h;
+		bi.bmiHeader.biPlanes = 1;
+		bi.bmiHeader.biBitCount = 32;
+		bi.bmiHeader.biCompression = BI_RGB;
+
+		bmp = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+		if (!bmp || !bits)
+			goto cleanup_gdi;
+
+		old_bmp = SelectObject(dc, bmp);
+		old_font = SelectObject(dc, font);
+
+		SetBkMode(dc, OPAQUE);
+		SetBkColor(dc, RGB(0, 0, 0));
+		SetTextColor(dc, RGB(255, 255, 255));
+
+		{
+			RECT rect = {0, 0, tex_w, tex_h};
+			HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
+			if (brush) {
+				FillRect(dc, &rect, brush);
+				DeleteObject(brush);
+			}
+			rect.left = 1;
+			rect.top = 1;
+			DrawTextW(dc, wide, -1, &rect, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
 		}
+
+		GdiFlush();
+
+		if (old_bmp) {
+			SelectObject(dc, old_bmp);
+			old_bmp = NULL;
+		}
+
+		alpha = (unsigned char *)malloc((size_t)(tex_w * tex_h));
+		if (alpha) {
+			const unsigned char *src = (const unsigned char *)bits;
+			for (int i = 0; i < tex_w * tex_h; i++) {
+				unsigned char b = src[i * 4 + 0];
+				unsigned char g = src[i * 4 + 1];
+				unsigned char r = src[i * 4 + 2];
+				unsigned char a = r;
+				if (g > a) a = g;
+				if (b > a) a = b;
+				alpha[i] = a;
+			}
+
+			glGenTextures(1, &gl_tex);
+			glBindTexture(GL_TEXTURE_2D, gl_tex);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+			glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+			glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+			glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, tex_w, tex_h, 0, GL_RED, GL_UNSIGNED_BYTE, alpha);
+			glBindTexture(GL_TEXTURE_2D, 0);
+
+			free(alpha);
+
+			insert_unicode_cache_entry(text, scale, tex_w, tex_h, gl_tex, NULL);
+		}
+
+	cleanup_gdi:
+		if (old_bmp)
+			SelectObject(dc, old_bmp);
+		if (old_font)
+			SelectObject(dc, old_font);
+		if (bmp)
+			DeleteObject(bmp);
+		if (font)
+			DeleteObject(font);
+		if (dc)
+			DeleteDC(dc);
+		free(wide);
+
+		if (gl_tex == 0)
+			return;
 	}
 
-	if (!font_unicode_tex)
-		glGenTextures(1, &font_unicode_tex);
+	float nx0 = (x / screen_w) * 2.0f - 1.0f;
+	float ny0 = 1.0f - (y / screen_h) * 2.0f;
+	float nx1 = ((x + tex_w) / screen_w) * 2.0f - 1.0f;
+	float ny1 = 1.0f - ((y + tex_h) / screen_h) * 2.0f;
 
-	glBindTexture(GL_TEXTURE_2D, font_unicode_tex);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, tex_w, tex_h, 0, GL_RED, GL_UNSIGNED_BYTE, alpha);
-	should_render = true;
+	float verts[] = {
+		nx0, ny0, 0.0f, 0.0f,
+		nx1, ny0, 1.0f, 0.0f,
+		nx0, ny1, 0.0f, 1.0f,
+		nx1, ny0, 1.0f, 0.0f,
+		nx1, ny1, 1.0f, 1.0f,
+		nx0, ny1, 0.0f, 1.0f,
+	};
 
-cleanup:
-	if (should_render) {
-		float nx0 = (x / screen_w) * 2.0f - 1.0f;
-		float ny0 = 1.0f - (y / screen_h) * 2.0f;
-		float nx1 = ((x + tex_w) / screen_w) * 2.0f - 1.0f;
-		float ny1 = 1.0f - ((y + tex_h) / screen_h) * 2.0f;
-		float verts[] = {
-			nx0, ny0, 0.0f, 0.0f,
-			nx1, ny0, 1.0f, 0.0f,
-			nx0, ny1, 0.0f, 1.0f,
-			nx1, ny0, 1.0f, 0.0f,
-			nx1, ny1, 1.0f, 1.0f,
-			nx0, ny1, 0.0f, 1.0f,
-		};
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-		glEnable(GL_BLEND);
-		glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glUseProgram(font_shader);
+	glUniform1i(font_u_tex, 0);
+	glUniform4f(font_u_color, color.r, color.g, color.b, color.a);
 
-		glUseProgram(font_shader);
-		glUniform1i(font_u_tex, 0);
-		glUniform4f(font_u_color, color.r, color.g, color.b, color.a);
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, gl_tex);
 
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, font_unicode_tex);
+	glBindVertexArray(font_vao);
+	glBindBuffer(GL_ARRAY_BUFFER, font_vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
 
-		glBindVertexArray(font_vao);
-		glBindBuffer(GL_ARRAY_BUFFER, font_vbo);
-		glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_DYNAMIC_DRAW);
+	glEnableVertexAttribArray(font_i_pos);
+	glEnableVertexAttribArray(font_i_coord);
+	glVertexAttribPointer(font_i_pos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
+	glVertexAttribPointer(font_i_coord, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)(2 * sizeof(float)));
 
-		glEnableVertexAttribArray(font_i_pos);
-		glEnableVertexAttribArray(font_i_coord);
-		glVertexAttribPointer(font_i_pos, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
-		glVertexAttribPointer(font_i_coord, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)(2 * sizeof(float)));
+	glDrawArrays(GL_TRIANGLES, 0, 6);
 
-		glDrawArrays(GL_TRIANGLES, 0, 6);
-
-		glDisableVertexAttribArray(font_i_pos);
-		glDisableVertexAttribArray(font_i_coord);
-		glBindBuffer(GL_ARRAY_BUFFER, 0);
-		glBindVertexArray(0);
-		glUseProgram(0);
-		glDisable(GL_BLEND);
-	}
-
-	if (old_bmp)
-		SelectObject(dc, old_bmp);
-	if (old_font)
-		SelectObject(dc, old_font);
-	if (bmp)
-		DeleteObject(bmp);
-	if (font)
-		DeleteObject(font);
-	if (dc)
-		DeleteDC(dc);
-	free(alpha);
-	free(wide);
+	glDisableVertexAttribArray(font_i_pos);
+	glDisableVertexAttribArray(font_i_coord);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindVertexArray(0);
+	glUseProgram(0);
+	glDisable(GL_BLEND);
 }
 #endif
 
@@ -695,36 +755,29 @@ static GLuint compile_font_shader(GLenum type, const char *src)
 
 void font_init(void)
 {
-	/* Build atlas texture */
-	unsigned char atlas[FONT_ATLAS_H][FONT_ATLAS_W];
-	memset(atlas, 0, sizeof(atlas));
+	temp_bitmap = (unsigned char *)malloc(ATLAS_W * ATLAS_H);
+	if (!temp_bitmap) {
+		fprintf(stderr, "Failed to allocate memory for font atlas bitmap.\n");
+		return;
+	}
+	memset(temp_bitmap, 0, ATLAS_W * ATLAS_H);
 
-	for (int ch = 0; ch < FONT_NUM_CHARS; ch++) {
-		int col = ch % FONT_ATLAS_COLS;
-		int row = ch / FONT_ATLAS_COLS;
-		for (int y = 0; y < FONT_CHAR_H; y++) {
-			unsigned char bits = 0;
-			if (ch < 95)
-				bits = font_data[ch][y];
-			else
-				bits = font_data_ext[ch - 95][y];
-
-			for (int x = 0; x < FONT_CHAR_W; x++) {
-				if (bits & (0x80 >> x))
-					atlas[row * FONT_CHAR_H + y][col * FONT_CHAR_W + x] = 255;
-			}
-		}
+	/* Bake Cabin font into atlas bitmap at height 48.0f */
+	int result = stbtt_BakeFontBitmap(cabin_font_data, 0, 48.0f, temp_bitmap, ATLAS_W, ATLAS_H, 32, 224, chardata);
+	if (result < 0) {
+		fprintf(stderr, "Warning: font baking failed (returned %d). Font atlas might be too small.\n", result);
 	}
 
 	glGenTextures(1, &font_tex);
 	glBindTexture(GL_TEXTURE_2D, font_tex);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
 	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, FONT_ATLAS_W, FONT_ATLAS_H,
-	             0, GL_RED, GL_UNSIGNED_BYTE, atlas);
+	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, ATLAS_W, ATLAS_H,
+	             0, GL_RED, GL_UNSIGNED_BYTE, temp_bitmap);
 	glBindTexture(GL_TEXTURE_2D, 0);
 
 	/* Build shader */
@@ -748,11 +801,14 @@ void font_init(void)
 
 void font_deinit(void)
 {
+#ifdef _WIN32
+	font_clear_unicode_cache();
+#endif
 	if (font_tex)     { glDeleteTextures(1, &font_tex); font_tex = 0; }
-	if (font_unicode_tex) { glDeleteTextures(1, &font_unicode_tex); font_unicode_tex = 0; }
 	if (font_vao)     { glDeleteVertexArrays(1, &font_vao); font_vao = 0; }
 	if (font_vbo)     { glDeleteBuffers(1, &font_vbo); font_vbo = 0; }
 	if (font_shader)  { glDeleteProgram(font_shader); font_shader = 0; }
+	if (temp_bitmap)  { free(temp_bitmap); temp_bitmap = NULL; }
 }
 
 float font_text_width(const char *text, float scale)
@@ -762,24 +818,33 @@ float font_text_width(const char *text, float scale)
 
 #ifdef _WIN32
 	if (font_needs_unicode_fallback(text)) {
+		unicode_cache_entry_t *entry = find_unicode_cache_entry(text, scale);
+		if (entry) {
+			return (float)entry->width;
+		}
 		int width = 0;
 		if (font_measure_unicode_text(text, scale, &width, NULL))
 			return (float)width;
 	}
 #endif
 
-	/* Count visible characters, not bytes (handles UTF-8 codepoints). */
-	int chars = 0;
+	float factor = (22.0f * scale) / 48.0f;
+	float width = 0.0f;
+
 	for (const unsigned char *p = (const unsigned char *)text; *p;) {
-		utf8_next_codepoint(&p);
-		chars++;
+		int codepoint = utf8_next_codepoint(&p);
+		if (!atlas_supports_codepoint(codepoint))
+			codepoint = '?';
+
+		int idx = codepoint - 32;
+		width += chardata[idx].xadvance * factor;
 	}
-	return chars * FONT_CHAR_W * scale;
+	return width;
 }
 
 float font_text_height(float scale)
 {
-	return FONT_CHAR_H * scale;
+	return 22.0f * scale;
 }
 
 void font_render_text(float x, float y, const char *text,
@@ -814,48 +879,45 @@ void font_render_text(float x, float y, const char *text,
 	if (!verts) return;
 
 	int vi = 0;
+	float factor = (22.0f * scale) / 48.0f;
+	float baseline_offset = 34.0f * factor;
 	float cx = x;
-	float cw = FONT_CHAR_W * scale;
-	float ch = FONT_CHAR_H * scale;
-	float inv_atlas_w = 1.0f / FONT_ATLAS_W;
-	float inv_atlas_h = 1.0f / FONT_ATLAS_H;
 
 	for (const unsigned char *p = (const unsigned char *)text; *p;) {
 		int codepoint = utf8_next_codepoint(&p);
-		int idx = -1;
-		if (codepoint >= 32 && codepoint <= 126) {
-			idx = codepoint - 32;
-		} else if (codepoint >= 160 && codepoint <= 255) {
-			idx = 95 + (codepoint - 160);
-		} else {
-			cx += cw; /* Character not in atlas, skip */
-			continue;
-		}
+		if (!atlas_supports_codepoint(codepoint))
+			codepoint = '?';
 
-		int col = idx % FONT_ATLAS_COLS;
-		int row = idx / FONT_ATLAS_COLS;
+		int idx = codepoint - 32;
 
-		float u0 = col * FONT_CHAR_W * inv_atlas_w;
-		float v0 = row * FONT_CHAR_H * inv_atlas_h;
-		float u1 = u0 + FONT_CHAR_W * inv_atlas_w;
-		float v1 = v0 + FONT_CHAR_H * inv_atlas_h;
+		stbtt_aligned_quad q;
+		float rx = 0.0f;
+		float ry = 0.0f;
+		stbtt_GetBakedQuad(chardata, ATLAS_W, ATLAS_H, idx, &rx, &ry, &q, 1);
+
+		float next_cx = cx + rx * factor;
+
+		float x0 = cx + q.x0 * factor;
+		float y0 = y + baseline_offset + q.y0 * factor;
+		float x1 = cx + q.x1 * factor;
+		float y1 = y + baseline_offset + q.y1 * factor;
 
 		/* Convert pixel coords to NDC (-1..1) */
-		float nx0 = (cx / screen_w) * 2.0f - 1.0f;
-		float ny0 = 1.0f - (y / screen_h) * 2.0f;
-		float nx1 = ((cx + cw) / screen_w) * 2.0f - 1.0f;
-		float ny1 = 1.0f - ((y + ch) / screen_h) * 2.0f;
+		float nx0 = (x0 / screen_w) * 2.0f - 1.0f;
+		float ny0 = 1.0f - (y0 / screen_h) * 2.0f;
+		float nx1 = (x1 / screen_w) * 2.0f - 1.0f;
+		float ny1 = 1.0f - (y1 / screen_h) * 2.0f;
 
 		/* Triangle 1 */
-		verts[vi++] = nx0; verts[vi++] = ny0; verts[vi++] = u0; verts[vi++] = v0;
-		verts[vi++] = nx1; verts[vi++] = ny0; verts[vi++] = u1; verts[vi++] = v0;
-		verts[vi++] = nx0; verts[vi++] = ny1; verts[vi++] = u0; verts[vi++] = v1;
+		verts[vi++] = nx0; verts[vi++] = ny0; verts[vi++] = q.s0; verts[vi++] = q.t0;
+		verts[vi++] = nx1; verts[vi++] = ny0; verts[vi++] = q.s1; verts[vi++] = q.t0;
+		verts[vi++] = nx0; verts[vi++] = ny1; verts[vi++] = q.s0; verts[vi++] = q.t1;
 		/* Triangle 2 */
-		verts[vi++] = nx1; verts[vi++] = ny0; verts[vi++] = u1; verts[vi++] = v0;
-		verts[vi++] = nx1; verts[vi++] = ny1; verts[vi++] = u1; verts[vi++] = v1;
-		verts[vi++] = nx0; verts[vi++] = ny1; verts[vi++] = u0; verts[vi++] = v1;
+		verts[vi++] = nx1; verts[vi++] = ny0; verts[vi++] = q.s1; verts[vi++] = q.t0;
+		verts[vi++] = nx1; verts[vi++] = ny1; verts[vi++] = q.s1; verts[vi++] = q.t1;
+		verts[vi++] = nx0; verts[vi++] = ny1; verts[vi++] = q.s0; verts[vi++] = q.t1;
 
-		cx += cw;
+		cx = next_cx;
 	}
 
 	/* Render */

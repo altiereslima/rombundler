@@ -110,9 +110,24 @@ static const char *strings_pt[STR_COUNT] = {
 	[STR_SRC_FALLBACK]      = "fallback do perfil",
 	[STR_VIEW_DESCRIPTORS]  = "Ver descritores do core",
 	[STR_DESC_HEADER]       = "DESCRITORES DO CORE",
-	[STR_NO_DESCRIPTORS]    = "Nenhum descritor fornecido pelo core (usando fallback)",
-	[STR_HINT_DESCRIPTORS]  = "Cima/Baixo: Rolar   B/Esc: Voltar",
 	[STR_HINT_INPUT2]       = "Backspace: Limpar botao   L/R: Trocar porta",
+
+	/* Novos perfis e botões traduzíveis */
+	[STR_PROFILE_MEGADRIVE_3] = "Mega Drive (3 bot\xC3\xB5""es)",
+	[STR_PROFILE_MEGADRIVE_6] = "Mega Drive (6 bot\xC3\xB5""es)",
+	[STR_PROFILE_GENERIC]     = "RetroPad (gen\xC3\xA9rico)",
+	[STR_BTN_C_RIGHT]         = "C-Direita",
+	[STR_BTN_C_UP]            = "C-Cima",
+	[STR_BTN_C_MODE]          = "Modo C",
+	[STR_BTN_L_LIGHT]         = "L (leve)",
+	[STR_BTN_R_LIGHT]         = "R (leve)",
+	[STR_BTN_COIN]            = "Ficha",
+	[STR_BTN_GATILHO]         = "%s (gatilho)",
+	[STR_BTN_NONE]            = "(nenhum)",
+	[STR_BTN_CIRCLE]          = "C\xC3\xADrculo",
+	[STR_BTN_SQUARE]          = "Quadrado",
+	[STR_BTN_TRIANGLE]        = "Tri\xC3\xA2ngulo",
+	[STR_BTN_NUMPAD]          = "Teclado Num. %d",
 };
 
 static const char *strings_en[STR_COUNT] = {
@@ -192,9 +207,24 @@ static const char *strings_en[STR_COUNT] = {
 	[STR_SRC_FALLBACK]      = "profile fallback",
 	[STR_VIEW_DESCRIPTORS]  = "View core descriptors",
 	[STR_DESC_HEADER]       = "CORE INPUT DESCRIPTORS",
-	[STR_NO_DESCRIPTORS]    = "No descriptors provided by the core (using fallback)",
-	[STR_HINT_DESCRIPTORS]  = "Up/Down: Scroll   B/Esc: Back",
 	[STR_HINT_INPUT2]       = "Backspace: Clear button   L/R: Change port",
+
+	/* Novos perfis e botões traduzíveis */
+	[STR_PROFILE_MEGADRIVE_3] = "Mega Drive (3 buttons)",
+	[STR_PROFILE_MEGADRIVE_6] = "Mega Drive (6 buttons)",
+	[STR_PROFILE_GENERIC]     = "RetroPad (generic)",
+	[STR_BTN_C_RIGHT]         = "C-Right",
+	[STR_BTN_C_UP]            = "C-Up",
+	[STR_BTN_C_MODE]          = "C-Mode",
+	[STR_BTN_L_LIGHT]         = "L (light)",
+	[STR_BTN_R_LIGHT]         = "R (light)",
+	[STR_BTN_COIN]            = "Coin",
+	[STR_BTN_GATILHO]         = "%s (trigger)",
+	[STR_BTN_NONE]            = "(none)",
+	[STR_BTN_CIRCLE]          = "Circle",
+	[STR_BTN_SQUARE]          = "Square",
+	[STR_BTN_TRIANGLE]        = "Triangle",
+	[STR_BTN_NUMPAD]          = "Numpad %d",
 };
 
 static const char *strings_es[STR_COUNT] = {
@@ -267,6 +297,23 @@ static const char *strings_es[STR_COUNT] = {
 	[STR_ASPECT_RESET]      = "Restaurar Valores",
 	[STR_HINT_ASPECT]       = "Izq/Der: Cambiar   A: Seleccionar   B/Esc: Volver",
 	[STR_HINT_ASPECT_EDIT]  = "D-Pad: Mover   LB/RB: Ancho   LT/RT: Alto   A: Guardar   B: Cancelar",
+
+	/* Novos perfis e botões traduzíveis */
+	[STR_PROFILE_MEGADRIVE_3] = "Mega Drive (3 botones)",
+	[STR_PROFILE_MEGADRIVE_6] = "Mega Drive (6 botones)",
+	[STR_PROFILE_GENERIC]     = "RetroPad (gen\xC3\xA9rico)",
+	[STR_BTN_C_RIGHT]         = "C-Derecha",
+	[STR_BTN_C_UP]            = "C-Arriba",
+	[STR_BTN_C_MODE]          = "Modo C",
+	[STR_BTN_L_LIGHT]         = "L (suave)",
+	[STR_BTN_R_LIGHT]         = "R (suave)",
+	[STR_BTN_COIN]            = "Ficha",
+	[STR_BTN_GATILHO]         = "%s (gatillo)",
+	[STR_BTN_NONE]            = "(ninguno)",
+	[STR_BTN_CIRCLE]          = "C\xC3\xADrculo",
+	[STR_BTN_SQUARE]          = "Cuadrado",
+	[STR_BTN_TRIANGLE]        = "Tri\xC3\xA1ngulo",
+	[STR_BTN_NUMPAD]          = "Teclado Num. %d",
 };
 
 static const char *strings_fr[STR_COUNT] = {
@@ -337,8 +384,24 @@ static const char *strings_fr[STR_COUNT] = {
 	[STR_ASPECT_ZOOM] = "Zoom",
 	[STR_ASPECT_CUSTOM_EDIT]= "Ajuster Position/Taille",
 	[STR_ASPECT_RESET]      = "Restaurer les Param\xC3\xA8tres",
-	[STR_HINT_ASPECT]       = "Gauche/Droite: Changer   A: Choisir   B/\xC3\x89""chap: Retour",
 	[STR_HINT_ASPECT_EDIT]  = "D-Pad: D\xC3\xA9placer   LB/RB: Largeur   LT/RT: Hauteur   A: Sauver   B: Annuler",
+
+	/* Novos perfis e botões traduzíveis */
+	[STR_PROFILE_MEGADRIVE_3] = "Mega Drive (3 boutons)",
+	[STR_PROFILE_MEGADRIVE_6] = "Mega Drive (6 boutons)",
+	[STR_PROFILE_GENERIC]     = "RetroPad (g\xC3\xA9n\xC3\xA9rique)",
+	[STR_BTN_C_RIGHT]         = "C-Droite",
+	[STR_BTN_C_UP]            = "C-Haut",
+	[STR_BTN_C_MODE]          = "Mode C",
+	[STR_BTN_L_LIGHT]         = "L (l\xC3\xA9ger)",
+	[STR_BTN_R_LIGHT]         = "R (l\xC3\xA9ger)",
+	[STR_BTN_COIN]            = "Cr\xC3\xA9""dit",
+	[STR_BTN_GATILHO]         = "%s (g\xC3\xA2tchette)",
+	[STR_BTN_NONE]            = "(aucun)",
+	[STR_BTN_CIRCLE]          = "Cercle",
+	[STR_BTN_SQUARE]          = "Carr\xC3\xA9",
+	[STR_BTN_TRIANGLE]        = "Triangle",
+	[STR_BTN_NUMPAD]          = "Pav\xC3\xA9 Num. %d",
 };
 
 static const char *strings_it[STR_COUNT] = {
@@ -409,8 +472,24 @@ static const char *strings_it[STR_COUNT] = {
 	[STR_ASPECT_ZOOM] = "Zoom",
 	[STR_ASPECT_CUSTOM_EDIT]= "Regola Posizione/Dimensione",
 	[STR_ASPECT_RESET]      = "Ripristina Predefinito",
-	[STR_HINT_ASPECT]       = "Sin/Des: Cambia   A: Seleziona   B/Esc: Indietro",
 	[STR_HINT_ASPECT_EDIT]  = "D-Pad: Muovi   LB/RB: Larghezza   LT/RT: Altezza   A: Salva   B: Annulla",
+
+	/* Novos perfis e botões traduzíveis */
+	[STR_PROFILE_MEGADRIVE_3] = "Mega Drive (3 pulsanti)",
+	[STR_PROFILE_MEGADRIVE_6] = "Mega Drive (6 pulsanti)",
+	[STR_PROFILE_GENERIC]     = "RetroPad (generico)",
+	[STR_BTN_C_RIGHT]         = "C-Destra",
+	[STR_BTN_C_UP]            = "C-Su",
+	[STR_BTN_C_MODE]          = "Modalit\xC3\xA0 C",
+	[STR_BTN_L_LIGHT]         = "L (leggero)",
+	[STR_BTN_R_LIGHT]         = "R (leggero)",
+	[STR_BTN_COIN]            = "Moneta",
+	[STR_BTN_GATILHO]         = "%s (grilletto)",
+	[STR_BTN_NONE]            = "(nessuno)",
+	[STR_BTN_CIRCLE]          = "Cerchio",
+	[STR_BTN_SQUARE]          = "Quadrato",
+	[STR_BTN_TRIANGLE]        = "Triangolo",
+	[STR_BTN_NUMPAD]          = "Tastierino %d",
 };
 
 static const char *strings_de[STR_COUNT] = {
@@ -481,8 +560,24 @@ static const char *strings_de[STR_COUNT] = {
 	[STR_ASPECT_ZOOM] = "Zoom",
 	[STR_ASPECT_CUSTOM_EDIT]= "Position/Gr\xC3\xB6\xC3\x9F""e Anpassen",
 	[STR_ASPECT_RESET]      = "Standard Wiederherstellen",
-	[STR_HINT_ASPECT]       = "Links/Rechts: \xC3\x84ndern   A: Ausw\xC3\xA4hlen   B/Esc: Zur\xC3\xBC""ck",
 	[STR_HINT_ASPECT_EDIT]  = "D-Pad: Bewegen   LB/RB: Breite   LT/RT: H\xC3\xB6he   A: Speichern   B: Abbrechen",
+
+	/* Novos perfis e botões traduzíveis */
+	[STR_PROFILE_MEGADRIVE_3] = "Mega Drive (3 Tasten)",
+	[STR_PROFILE_MEGADRIVE_6] = "Mega Drive (6 Tasten)",
+	[STR_PROFILE_GENERIC]     = "RetroPad (generisch)",
+	[STR_BTN_C_RIGHT]         = "C-Rechts",
+	[STR_BTN_C_UP]            = "C-Oben",
+	[STR_BTN_C_MODE]          = "C-Modus",
+	[STR_BTN_L_LIGHT]         = "L (leicht)",
+	[STR_BTN_R_LIGHT]         = "R (leicht)",
+	[STR_BTN_COIN]            = "M\xC3\xBCnze",
+	[STR_BTN_GATILHO]         = "%s (Trigger)",
+	[STR_BTN_NONE]            = "(keiner)",
+	[STR_BTN_CIRCLE]          = "Kreis",
+	[STR_BTN_SQUARE]          = "Quadrat",
+	[STR_BTN_TRIANGLE]        = "Dreieck",
+	[STR_BTN_NUMPAD]          = "Ziffernblock %d",
 };
 
 static const char *strings_zh[STR_COUNT] = {
@@ -555,8 +650,24 @@ static const char *strings_zh[STR_COUNT] = {
 	[STR_ASPECT_ZOOM] = "\xE7\xBC\xA9\xE6\x94\xBE",
 	[STR_ASPECT_CUSTOM_EDIT]= "\xE8\xB0\x83\xE6\x95\xB4\xE4\xBD\x8D\xE7\xBD\xAE\x2F\xE5\xA4\xA7\xE5\xB0\x8F",
 	[STR_ASPECT_RESET]      = "\xE6\x81\xA2\xE5\xA4\x8D\xE9\xBB\x98\xE8\xAE\xA4",
-	[STR_HINT_ASPECT]       = "\xE5\xB7\xA6\x2F\xE5\x8F\xB3\x3A\x20\xE6\x9B\xB4\xE6\x94\xB9\x20\x20\x20\x41\x3A\x20\xE9\x80\x89\xE6\x8B\xA9\x20\x20\x20\x42\x2F\x45\x73\x63\x3A\x20\xE8\xBF\x94\xE5\x9B\x9E",
 	[STR_HINT_ASPECT_EDIT]  = "\xE6\x96\xB9\xE5\x90\x91\xE9\x94\xAE\x3A\x20\xE7\xA7\xBB\xE5\x8A\xA8\x20\x20\x20\x4C\x42\x2F\x52\x42\x3A\x20\xE5\xAE\xBD\xE5\xBA\xA6\x20\x20\x20\x4C\x54\x2F\x52\x54\x3A\x20\xE9\xAB\x98\xE5\xBA\xA6\x20\x20\x20\x41\x3A\x20\xE4\xBF\x9D\xE5\xAD\x98\x20\x20\x20\x42\x3A\x20\xE5\x8F\x96\xE6\xB6\x88",
+
+	/* Novos perfis e botões traduzíveis */
+	[STR_PROFILE_MEGADRIVE_3] = "\x4D\x65\x67\x61\x20\x44\x72\x69\x76\x65\x20\x28\x33\xE9\x94\xAE\x29",
+	[STR_PROFILE_MEGADRIVE_6] = "\x4D\x65\x67\x61\x20\x44\x72\x69\x76\x65\x20\x28\x36\xE9\x94\xAE\x29",
+	[STR_PROFILE_GENERIC]     = "\x52\x65\x74\x72\x6F\x50\x61\x64\x20\x28\xE9\x80\x9A\xE7\x94\xA8\x29",
+	[STR_BTN_C_RIGHT]         = "\x43\xE9\x94\xAE\x2D\xE5\x8F\xB3",
+	[STR_BTN_C_UP]            = "\x43\xE9\x94\xAE\x2D\xE4\xB8\x8A",
+	[STR_BTN_C_MODE]          = "\x43\xE9\x94\xAE\xE6\xA8\xA1\xE5\xBC\x8F",
+	[STR_BTN_L_LIGHT]         = "\x4C\xE9\x94\xAE\x20\x28\xE8\xBD\xBB\xE6\x8C\x89\x29",
+	[STR_BTN_R_LIGHT]         = "\x52\xE9\x94\xAE\x20\x28\xE8\xBD\xBB\xE6\x8C\x89\x29",
+	[STR_BTN_COIN]            = "\xE6\x8A\x95\xE5\xB8\x81",
+	[STR_BTN_GATILHO]         = "%s (\xE6\x89\xB3\xE6\x9C\xBA\xE9\x94\xAE)",
+	[STR_BTN_NONE]            = "\x28\xE6\x97\xA0\x29",
+	[STR_BTN_CIRCLE]          = "\xE5\x9C\x86\xE5\x9C\x88",
+	[STR_BTN_SQUARE]          = "\xE6\x96\xB9\xE5\x9D\x97",
+	[STR_BTN_TRIANGLE]        = "\xE4\xB8\x89\xE8\xA7\x92",
+	[STR_BTN_NUMPAD]          = "\xE6\x95\xB0\xE5\xAD\x97\xE9\x94\xAE\xE7\x9B\x98 %d",
 };
 
 static const char *strings_hi[STR_COUNT] = {
@@ -609,7 +720,7 @@ static const char *strings_hi[STR_COUNT] = {
 	[STR_YES_QUIT]        = "\xE0\xA4\xB9\xE0\xA4\xBE\xE0\xA4\x81\x20\x2D\x20\xE0\xA4\xAC\xE0\xA4\xBE\xE0\xA4\xB9\xE0\xA4\xB0\x20\xE0\xA4\xA8\xE0\xA4\xBF\xE0\xA4\x95\xE0\xA4\xB2\xE0\xA5\x87\xE0\xA4\x82",
 	[STR_NO_CANCEL]       = "\xE0\xA4\xA8\xE0\xA4\xB9\xE0\xA5\x80\xE0\xA4\x82\x20\x2D\x20\xE0\xA4\xB0\xE0\xA4\xA6\xE0\xA5\x8D\xE0\xA4\xA6\x20\xE0\xA4\x95\xE0\xA4\xB0\xE0\xA5\x87\xE0\xA4\x82",
 
-	[STR_LANG_AUTO] = "\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\xB5\xE0\xA4\x9A\xE0\xA4\xBE\xE0\xA4\xB2\xE0\xA4\xBF\xE0\xA4\xA4",
+	[STR_LANG_AUTO] = "\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\xB5\xE0\xA4\x9C\xE0\xA4\xBE\xE0\xA4\xB2\xE0\xA4\xBF\xE0\xA4\xA4",
 	[STR_LANG_PT]   = "Portugu\xC3\xAAs",
 	[STR_LANG_EN]   = "English",
 	[STR_LANG_ES]   = "Espa\xC3\xB1ol",
@@ -622,7 +733,7 @@ static const char *strings_hi[STR_COUNT] = {
 	[STR_ASPECT_HEADER]     = "\xE0\xA4\x86\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\xAA\xE0\xA5\x87\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\x9F\x20\xE0\xA4\xB0\xE0\xA5\x87\xE0\xA4\xB6\xE0\xA4\xBF\xE0\xA4\xAF\xE0\xA5\x8B",
 	[STR_ASPECT_RATIO]      = "\xE0\xA4\x85\xE0\xA4\xA8\xE0\xA5\x81\xE0\xA4\xAA\xE0\xA4\xBE\xE0\xA4\xA4",
 	[STR_ASPECT_CORE]       = "\xE0\xA4\x95\xE0\xA5\x8B\xE0\xA4\xB0\x20\xE0\xA4\xA1\xE0\xA4\xBF\xE0\xA4\xAB\xE0\xA4\xBC\xE0\xA5\x89\xE0\xA4\xB2\xE0\xA5\x8D\xE0\xA4\x9F",
-	[STR_ASPECT_STRETCH]    = "\xE0\xA4\x96\xE0\xA5\x80\xE0\xA4\x82\xE0\xA4\x9A\xE0\xA5\x87\xE0\xA4\x82",
+	[STR_ASPECT_STRETCH]    = "\xE0\xA4\x96\xE0\xA5\x80\xE0\xA4\x82\xE0\xA4\x9C\xE0\xA5\x87\xE0\xA4\x82",
 	[STR_ASPECT_4_3]        = "4:3",
 	[STR_ASPECT_16_9]       = "16:9",
 	[STR_ASPECT_CUSTOM]     = "\xE0\xA4\x95\xE0\xA4\xB8\xE0\xA5\x8D\xE0\xA4\x9F\xE0\xA4\xAE",

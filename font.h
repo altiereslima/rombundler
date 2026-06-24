@@ -13,11 +13,14 @@ typedef struct {
 	float r, g, b, a;
 } font_color;
 
-#define FONT_COLOR_WHITE  (font_color){1.0f, 1.0f, 1.0f, 1.0f}
-#define FONT_COLOR_GRAY   (font_color){0.376f, 0.376f, 0.376f, 1.0f}
-#define FONT_COLOR_YELLOW (font_color){1.0f, 0.85f, 0.0f, 1.0f}
-#define FONT_COLOR_RED    (font_color){1.0f, 0.2f, 0.2f, 1.0f}
-#define FONT_COLOR_GREEN  (font_color){0.2f, 1.0f, 0.4f, 1.0f}
+/* ── Paleta Batocera / RetroArch Ozone Dark (hardcoded, sem arquivos externos) ── */
+#define FONT_COLOR_WHITE  (font_color){1.000f, 1.000f, 1.000f, 1.0f}  /* item selecionado */
+#define FONT_COLOR_GRAY   (font_color){0.749f, 0.749f, 0.749f, 1.0f}  /* item normal */
+#define FONT_COLOR_DIM    (font_color){0.435f, 0.435f, 0.435f, 1.0f}  /* item desabilitado */
+#define FONT_COLOR_CYAN   (font_color){0.137f, 0.651f, 0.835f, 1.0f}  /* cabeçalho de seção */
+#define FONT_COLOR_YELLOW (font_color){0.894f, 0.894f, 0.000f, 1.0f}  /* valor/destaque */
+#define FONT_COLOR_RED    (font_color){1.000f, 0.420f, 0.420f, 1.0f}  /* erro/aviso */
+#define FONT_COLOR_HINT   (font_color){0.541f, 0.541f, 0.541f, 1.0f}  /* rodapé/hints */
 
 /* Initialize the font system. Call once after OpenGL context is ready. */
 void font_init(void);
@@ -30,6 +33,9 @@ void font_clear_sw_target(void);
 
 /* Clean up font resources. */
 void font_deinit(void);
+
+/* Clear cached unicode textures/bitmaps when language changes. */
+void font_clear_unicode_cache(void);
 
 /* Render a string at pixel coordinates (top-left origin).
  * scale: multiplier for the 8x16 base glyph size.

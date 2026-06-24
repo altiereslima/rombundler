@@ -11,6 +11,7 @@
 #include "input_profile.h"
 #include "ini.h"
 #include "libretro.h"
+#include "lang.h"
 
 #define GP_MAX_PORTS   4
 #define GP_MAX_BUTTONS 16
@@ -129,8 +130,8 @@ const char *input_profile_display_name(input_profile_t profile)
 {
 	switch (profile) {
 		case INPUT_PROFILE_MASTER_SYSTEM: return "Master System / Game Gear";
-		case INPUT_PROFILE_MEGADRIVE_3:   return "Mega Drive (3 botoes)";
-		case INPUT_PROFILE_MEGADRIVE_6:   return "Mega Drive (6 botoes)";
+		case INPUT_PROFILE_MEGADRIVE_3:   return lang_get(STR_PROFILE_MEGADRIVE_3);
+		case INPUT_PROFILE_MEGADRIVE_6:   return lang_get(STR_PROFILE_MEGADRIVE_6);
 		case INPUT_PROFILE_SNES:          return "Super Nintendo";
 		case INPUT_PROFILE_NES:           return "Nintendo (NES)";
 		case INPUT_PROFILE_GB:            return "Game Boy";
@@ -144,13 +145,14 @@ const char *input_profile_display_name(input_profile_t profile)
 		case INPUT_PROFILE_DREAMCAST:     return "Sega Dreamcast";
 		case INPUT_PROFILE_PSP:           return "PSP";
 		case INPUT_PROFILE_GENERIC:
-		default:                          return "RetroPad (generico)";
+		default:                          return lang_get(STR_PROFILE_GENERIC);
 	}
 }
 
 const char *input_profile_fallback_button_name(input_profile_t profile,
                                                int retro_id)
 {
+	static char name_buf[32];
 	switch (profile) {
 	case INPUT_PROFILE_MASTER_SYSTEM:
 		switch (retro_id) {
@@ -241,7 +243,7 @@ const char *input_profile_fallback_button_name(input_profile_t profile,
 			case RETRO_DEVICE_ID_JOYPAD_Y:      return "C";
 			case RETRO_DEVICE_ID_JOYPAD_X:      return "D";
 			case RETRO_DEVICE_ID_JOYPAD_START:  return "Start";
-			case RETRO_DEVICE_ID_JOYPAD_SELECT: return "Coin";
+			case RETRO_DEVICE_ID_JOYPAD_SELECT: return lang_get(STR_BTN_COIN);
 			default: return NULL;
 		}
 	case INPUT_PROFILE_JAGUAR:
@@ -249,13 +251,13 @@ const char *input_profile_fallback_button_name(input_profile_t profile,
 			case RETRO_DEVICE_ID_JOYPAD_B:      return "B";
 			case RETRO_DEVICE_ID_JOYPAD_A:      return "A";
 			case RETRO_DEVICE_ID_JOYPAD_Y:      return "C";
-			case RETRO_DEVICE_ID_JOYPAD_X:      return "Numpad 0";
-			case RETRO_DEVICE_ID_JOYPAD_L:      return "Numpad 1";
-			case RETRO_DEVICE_ID_JOYPAD_R:      return "Numpad 2";
-			case RETRO_DEVICE_ID_JOYPAD_L2:     return "Numpad 3";
-			case RETRO_DEVICE_ID_JOYPAD_R2:     return "Numpad 4";
-			case RETRO_DEVICE_ID_JOYPAD_L3:     return "Numpad 5";
-			case RETRO_DEVICE_ID_JOYPAD_R3:     return "Numpad 6";
+			case RETRO_DEVICE_ID_JOYPAD_X:      snprintf(name_buf, sizeof(name_buf), lang_get(STR_BTN_NUMPAD), 0); return name_buf;
+			case RETRO_DEVICE_ID_JOYPAD_L:      snprintf(name_buf, sizeof(name_buf), lang_get(STR_BTN_NUMPAD), 1); return name_buf;
+			case RETRO_DEVICE_ID_JOYPAD_R:      snprintf(name_buf, sizeof(name_buf), lang_get(STR_BTN_NUMPAD), 2); return name_buf;
+			case RETRO_DEVICE_ID_JOYPAD_L2:     snprintf(name_buf, sizeof(name_buf), lang_get(STR_BTN_NUMPAD), 3); return name_buf;
+			case RETRO_DEVICE_ID_JOYPAD_R2:     snprintf(name_buf, sizeof(name_buf), lang_get(STR_BTN_NUMPAD), 4); return name_buf;
+			case RETRO_DEVICE_ID_JOYPAD_L3:     snprintf(name_buf, sizeof(name_buf), lang_get(STR_BTN_NUMPAD), 5); return name_buf;
+			case RETRO_DEVICE_ID_JOYPAD_R3:     snprintf(name_buf, sizeof(name_buf), lang_get(STR_BTN_NUMPAD), 6); return name_buf;
 			case RETRO_DEVICE_ID_JOYPAD_START:  return "Option";
 			case RETRO_DEVICE_ID_JOYPAD_SELECT: return "Pause";
 			default: return NULL;
@@ -278,12 +280,12 @@ const char *input_profile_fallback_button_name(input_profile_t profile,
 		switch (retro_id) {
 			case RETRO_DEVICE_ID_JOYPAD_B:      return "A";
 			case RETRO_DEVICE_ID_JOYPAD_Y:      return "B";
-			case RETRO_DEVICE_ID_JOYPAD_A:      return "C-direita";
-			case RETRO_DEVICE_ID_JOYPAD_X:      return "C-cima";
+			case RETRO_DEVICE_ID_JOYPAD_A:      return lang_get(STR_BTN_C_RIGHT);
+			case RETRO_DEVICE_ID_JOYPAD_X:      return lang_get(STR_BTN_C_UP);
 			case RETRO_DEVICE_ID_JOYPAD_L:      return "L";
 			case RETRO_DEVICE_ID_JOYPAD_R:      return "R";
 			case RETRO_DEVICE_ID_JOYPAD_L2:     return "Z";
-			case RETRO_DEVICE_ID_JOYPAD_R2:     return "Modo C";
+			case RETRO_DEVICE_ID_JOYPAD_R2:     return lang_get(STR_BTN_C_MODE);
 			case RETRO_DEVICE_ID_JOYPAD_START:  return "Start";
 			default: return NULL;
 		}
@@ -311,8 +313,8 @@ const char *input_profile_fallback_button_name(input_profile_t profile,
 			case RETRO_DEVICE_ID_JOYPAD_X:      return "Y";
 			case RETRO_DEVICE_ID_JOYPAD_L:      return "L";
 			case RETRO_DEVICE_ID_JOYPAD_R:      return "R";
-			case RETRO_DEVICE_ID_JOYPAD_L2:     return "L (leve)";
-			case RETRO_DEVICE_ID_JOYPAD_R2:     return "R (leve)";
+			case RETRO_DEVICE_ID_JOYPAD_L2:     return lang_get(STR_BTN_L_LIGHT);
+			case RETRO_DEVICE_ID_JOYPAD_R2:     return lang_get(STR_BTN_R_LIGHT);
 			case RETRO_DEVICE_ID_JOYPAD_START:  return "Start";
 			default: return NULL;
 		}

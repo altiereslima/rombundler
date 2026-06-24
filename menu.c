@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <time.h>
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -35,12 +36,38 @@
 extern config g_cfg;
 extern GLFWwindow *window;
 
+/* ── Cores Batocera Carbon ── */
+#define MC_BG_R     0.082f   /* fundo base carbon #151515 */
+#define MC_BG_G     0.082f
+#define MC_BG_B     0.082f
+#define MC_BG_A     1.0f     /* 100% opaco para o menu Carbon */
+
+#define MC_BAR_R    0.051f   /* barras header/footer #0D0D0D */
+#define MC_BAR_G    0.051f
+#define MC_BAR_B    0.051f
+#define MC_BAR_A    1.0f
+
+#define MC_ACCENT_R 0.800f   /* linha de detalhe vermelha #CC1616 */
+#define MC_ACCENT_G 0.086f
+#define MC_ACCENT_B 0.086f
+#define MC_ACCENT_A 1.0f
+
+#define MC_SEL_R    0.000f   /* fundo seleção azul #0057b8 */
+#define MC_SEL_G    0.341f
+#define MC_SEL_B    0.722f
+#define MC_SEL_A    1.0f
+
 /* ─────────────────── Menu State ─────────────────── */
 
 static bool       menu_active = false;
 static menu_page_t menu_page  = MENU_PAGE_MAIN;
 static int        menu_sel    = 0;
 static int        menu_scroll = 0;
+
+static float      modal_x     = 0.0f;
+static float      modal_y     = 0.0f;
+static float      modal_w     = 0.0f;
+static float      modal_h     = 0.0f;
 
 /* Debounce: prevent repeat inputs */
 static double     last_input_time = 0;
@@ -175,11 +202,12 @@ void menu_clear_sw_target(void)
 static int scr_w, scr_h;
 static float scale;
 
-/* Shader e VBOs para desenhar retângulos coloridos (overlay bg + highlight) */
+/* Shader e VBOs para desenhar retângulos coloridos (com shader procedimental Carbon Fiber) */
 static GLuint menu_shader = 0;
 static GLuint menu_vao = 0;
 static GLuint menu_vbo = 0;
 static GLint  menu_u_color = -1;
+static GLint  menu_u_mode = -1;
 static GLint  menu_i_pos = -1;
 static bool   menu_gl_inited = false;
 
@@ -191,8 +219,33 @@ static const char *menu_vsrc =
 
 static const char *menu_fsrc =
 	"uniform vec4 u_color;\n"
+	"uniform int u_mode;\n" // 0: solid, 1: carbon fiber
 	"void main() {\n"
-	"  gl_FragColor = u_color;\n"
+	"  if (u_mode == 1) {\n"
+	"    vec2 pos = gl_FragCoord.xy;\n"
+	"    float px = mod(floor(pos.x), 8.0);\n"
+	"    float py = mod(floor(pos.y), 8.0);\n"
+	"    float val = 0.0;\n"
+	"    float bx = floor(px / 2.0);\n"
+	"    float by = floor(py / 2.0);\n"
+	"    float pattern = mod(bx + by, 2.0);\n"
+	"    if (pattern < 1.0) {\n"
+	"      val = 0.035;\n"
+	"    } else {\n"
+	"      val = -0.035;\n"
+	"    }\n"
+	"    float mx = mod(px, 2.0);\n"
+	"    float my = mod(py, 2.0);\n"
+	"    if (abs(mx - my) < 0.1) {\n"
+	"      val += 0.015;\n"
+	"    } else {\n"
+	"      val -= 0.015;\n"
+	"    }\n"
+	"    vec3 col = u_color.rgb + vec3(val);\n"
+	"    gl_FragColor = vec4(col, u_color.a);\n"
+	"  } else {\n"
+	"    gl_FragColor = u_color;\n"
+	"  }\n"
 	"}\n";
 
 static void menu_init_gl(void)
@@ -216,6 +269,7 @@ static void menu_init_gl(void)
 
 	menu_i_pos   = glGetAttribLocation(menu_shader, "i_pos");
 	menu_u_color = glGetUniformLocation(menu_shader, "u_color");
+	menu_u_mode  = glGetUniformLocation(menu_shader, "u_mode");
 
 	glGenVertexArrays(1, &menu_vao);
 	glGenBuffers(1, &menu_vbo);
@@ -224,7 +278,7 @@ static void menu_init_gl(void)
 }
 
 static void draw_rect(float nx0, float ny0, float nx1, float ny1,
-                       float r, float g, float b, float a)
+                       float r, float g, float b, float a, int textured)
 {
 	if (menu_sw_buf) {
 		/* Software path: NDC (-1..1) -> pixel coords */
@@ -235,21 +289,48 @@ static void draw_rect(float nx0, float ny0, float nx1, float ny1,
 		if (px0 < 0) px0 = 0; if (px1 > menu_sw_w) px1 = menu_sw_w;
 		if (py0 < 0) py0 = 0; if (py1 > menu_sw_h) py1 = menu_sw_h;
 
-		uint8_t sa = (uint8_t)(a * 255.0f);
-		uint8_t ia = 255 - sa;
+		unsigned int sa = (unsigned int)(a * 255.0f);
+		unsigned int ia = 255u - sa;
 		uint8_t sb = (uint8_t)(b * 255.0f);
 		uint8_t sg = (uint8_t)(g * 255.0f);
 		uint8_t sr = (uint8_t)(r * 255.0f);
 
 		for (int yy = py0; yy < py1; yy++) {
 			for (int xx = px0; xx < px1; xx++) {
+				uint8_t r_b, r_g, r_r;
+				if (textured) {
+					int tx = xx % 8;
+					int ty = yy % 8;
+					float val = 0.0f;
+					if ((tx / 2 + ty / 2) % 2 == 0) {
+						val = 0.035f;
+					} else {
+						val = -0.035f;
+					}
+					if ((tx % 2) == (ty % 2)) {
+						val += 0.015f;
+					} else {
+						val -= 0.015f;
+					}
+					float fb = b + val; if (fb < 0.0f) fb = 0.0f; else if (fb > 1.0f) fb = 1.0f;
+					float fg = g + val; if (fg < 0.0f) fg = 0.0f; else if (fg > 1.0f) fg = 1.0f;
+					float fr = r + val; if (fr < 0.0f) fr = 0.0f; else if (fr > 1.0f) fr = 1.0f;
+					r_b = (uint8_t)(fb * 255.0f);
+					r_g = (uint8_t)(fg * 255.0f);
+					r_r = (uint8_t)(fr * 255.0f);
+				} else {
+					r_b = sb;
+					r_g = sg;
+					r_r = sr;
+				}
+
 				uint32_t dst = menu_sw_buf[yy * menu_sw_w + xx];
 				uint8_t db = (dst >> 0) & 0xFF;
 				uint8_t dg = (dst >> 8) & 0xFF;
 				uint8_t dr = (dst >> 16) & 0xFF;
-				uint8_t rb = (uint8_t)((db * ia + sb * sa) / 255);
-				uint8_t rg = (uint8_t)((dg * ia + sg * sa) / 255);
-				uint8_t rr = (uint8_t)((dr * ia + sr * sa) / 255);
+				uint8_t rb = (uint8_t)((db * ia + r_b * sa) / 255);
+				uint8_t rg = (uint8_t)((dg * ia + r_g * sa) / 255);
+				uint8_t rr = (uint8_t)((dr * ia + r_r * sa) / 255);
 				menu_sw_buf[yy * menu_sw_w + xx] = rb | (rg << 8) | (rr << 16) | 0xFF000000u;
 			}
 		}
@@ -267,6 +348,7 @@ static void draw_rect(float nx0, float ny0, float nx1, float ny1,
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 	glUseProgram(menu_shader);
 	glUniform4f(menu_u_color, r, g, b, a);
+	glUniform1i(menu_u_mode, textured);
 
 	glBindVertexArray(menu_vao);
 	glBindBuffer(GL_ARRAY_BUFFER, menu_vbo);
@@ -284,49 +366,161 @@ static void draw_rect(float nx0, float ny0, float nx1, float ny1,
 
 static void render_overlay_bg(float alpha)
 {
-	draw_rect(-1.0f, -1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, alpha);
+	/* Fundo Carbon — se transparente, alpha = 0.0, senão desenha carbon fiber */
+	if (alpha > 0.0f) {
+		draw_rect(-1.0f, -1.0f, 1.0f, 1.0f, MC_BG_R, MC_BG_G, MC_BG_B, alpha, 1);
+	}
 }
 
-/* Render a menu item. Returns the Y offset for the next item. */
+static void get_page_start_coords(float *out_x, float *out_y)
+{
+	*out_x = modal_x + 24.0f;
+	*out_y = modal_y + 56.0f + font_text_height(scale * 1.15f);
+}
+
+/*
+ * render_panel — Desenha a moldura visual do tema Carbon.
+ *   Se is_popup for true (Confirm Exit), desenha um modal popup central.
+ *   Senão, desenha o layout com fundo Carbon fiber e o menu em um painel centralizado.
+ */
+static void render_panel(const char *title, const char *hint, bool is_popup)
+{
+	/* 1. Fundo Carbon fiber em tela cheia */
+	draw_rect(-1.0f, -1.0f, 1.0f, 1.0f, MC_BG_R, MC_BG_G, MC_BG_B, 1.0f, 1);
+
+	/* Converter limites do modal para NDC (-1..1) */
+	float nx0 = (modal_x / scr_w) * 2.0f - 1.0f;
+	float ny0 = 1.0f - ((modal_y + modal_h) / scr_h) * 2.0f;
+	float nx1 = ((modal_x + modal_w) / scr_w) * 2.0f - 1.0f;
+	float ny1 = 1.0f - (modal_y / scr_h) * 2.0f;
+
+	/* 2. Fundo escuro do modal */
+	draw_rect(nx0, ny0, nx1, ny1, 0.114f, 0.114f, 0.114f, 1.0f, 0);
+
+	/* 3. Borda fina cinza claro (1.5px) */
+	float bw = 1.5f / scr_w * 2.0f;
+	float bh = 1.5f / scr_h * 2.0f;
+	draw_rect(nx0, ny1 - bh, nx1, ny1, 0.220f, 0.220f, 0.220f, 1.0f, 0);
+	draw_rect(nx0, ny0, nx1, ny0 + bh, 0.220f, 0.220f, 0.220f, 1.0f, 0);
+	draw_rect(nx0, ny0, nx0 + bw, ny1, 0.220f, 0.220f, 0.220f, 1.0f, 0);
+	draw_rect(nx1 - bw, ny0, nx1, ny1, 0.220f, 0.220f, 0.220f, 1.0f, 0);
+
+	/* 4. Título centralizado e linha divisória */
+	if (title) {
+		float title_scale = scale * 1.15f;
+		float th = font_text_height(title_scale);
+		float tx = modal_x + (modal_w - font_text_width(title, title_scale)) * 0.5f;
+		float ty = modal_y + 20.0f;
+		font_render_text(tx, ty, title, FONT_COLOR_WHITE, title_scale, scr_w, scr_h);
+
+		float sep_y = ty + th + 12.0f;
+		float sep_ny = 1.0f - (sep_y / scr_h) * 2.0f;
+		float line_h = 1.0f / scr_h * 2.0f;
+		draw_rect(nx0 + bw, sep_ny - line_h, nx1 - bw, sep_ny, 0.180f, 0.180f, 0.180f, 1.0f, 0);
+	}
+
+	/* 5. Barra de Rodapé escura na base da tela */
+	float footer_h = scr_h * 0.065f;
+	float footer_y = scr_h - footer_h;
+
+	float ftr_nx0 = -1.0f;
+	float ftr_ny0 = -1.0f;
+	float ftr_nx1 = 1.0f;
+	float ftr_ny1 = 1.0f - (footer_y / scr_h) * 2.0f;
+	draw_rect(ftr_nx0, ftr_ny0, ftr_nx1, ftr_ny1, 0.051f, 0.051f, 0.051f, 1.0f, 0);
+
+	/* Linha fina azul de destaque acima do rodapé */
+	float ftr_line_ny = ftr_ny1;
+	float ftr_line_h = 2.0f / scr_h * 2.0f;
+	draw_rect(ftr_nx0, ftr_line_ny, ftr_nx1, ftr_line_ny + ftr_line_h, 0.0f, 0.341f, 0.722f, 1.0f, 0);
+
+	/* 6. Dicas e relógio */
+	if (hint) {
+		float hx = scr_w * 0.05f;
+		float hy = footer_y + (footer_h - font_text_height(scale * 0.75f)) * 0.5f;
+		font_render_text(hx, hy, hint, FONT_COLOR_HINT, scale * 0.75f, scr_w, scr_h);
+	}
+
+	time_t rawtime;
+	struct tm *timeinfo;
+	char time_str[16] = "";
+	time(&rawtime);
+	timeinfo = localtime(&rawtime);
+	if (timeinfo) {
+		strftime(time_str, sizeof(time_str), "%H:%M", timeinfo);
+		float tx = scr_w - 40.0f - font_text_width(time_str, scale * 0.75f);
+		float ty = footer_y + (footer_h - font_text_height(scale * 0.75f)) * 0.5f;
+		font_render_text(tx, ty, time_str, FONT_COLOR_WHITE, scale * 0.75f, scr_w, scr_h);
+	}
+}
+
 static float render_item(float x, float y, const char *text, bool selected, bool is_header)
 {
 	font_color color;
 	float item_scale = scale;
 
 	if (is_header) {
-		color = FONT_COLOR_YELLOW;
-		item_scale = scale * 1.1f;
+		color = FONT_COLOR_CYAN;
+		item_scale = scale * 1.15f;
 	} else if (selected) {
 		color = FONT_COLOR_WHITE;
 
-		/* Draw subtle highlight bar behind selected item */
-		float tw = font_text_width(text, item_scale);
-		float th = font_text_height(item_scale);
-		float pad = 4.0f;
+		float th  = font_text_height(item_scale);
+		float pad = 6.0f;
+		
+		float left_x = modal_x + 1.5f;
+		float right_x = modal_x + modal_w - 1.5f;
 
-		float nx0 = ((x - pad) / scr_w) * 2.0f - 1.0f;
+		float nx0 = (left_x / scr_w) * 2.0f - 1.0f;
 		float ny0 = 1.0f - ((y + th + pad) / scr_h) * 2.0f;
-		float nx1 = ((x + tw + pad) / scr_w) * 2.0f - 1.0f;
+		float nx1 = (right_x / scr_w) * 2.0f - 1.0f;
 		float ny1 = 1.0f - ((y - pad) / scr_h) * 2.0f;
 
-		draw_rect(nx0, ny0, nx1, ny1, 1.0f, 1.0f, 1.0f, 0.08f);
+		/* Barra de seleção azul */
+		draw_rect(nx0, ny0, nx1, ny1, MC_SEL_R, MC_SEL_G, MC_SEL_B, MC_SEL_A, 0);
 	} else {
 		color = FONT_COLOR_GRAY;
 	}
 
 	font_render_text(x, y, text, color, item_scale, scr_w, scr_h);
-	return y + font_text_height(item_scale) + 4.0f;
+	return y + font_text_height(item_scale) + 12.0f;
 }
 
-/* Render a key-value item with left/right arrows for selected */
+/* Render a key-value item: chave à esquerda, valor à direita */
 static float render_kv_item(float x, float y, const char *key, const char *value, bool selected)
 {
-	char buf[256];
-	if (selected)
-		snprintf(buf, sizeof(buf), "< %s: %s >", key, value);
-	else
-		snprintf(buf, sizeof(buf), "  %s: %s", key, value);
-	return render_item(x, y, buf, selected, false);
+	float item_scale = scale;
+	float th  = font_text_height(item_scale);
+	float pad = 6.0f;
+	
+	float left_x = modal_x + 1.5f;
+	float right_x = modal_x + modal_w - 1.5f;
+
+	if (selected) {
+		float nx0 = (left_x / scr_w) * 2.0f - 1.0f;
+		float ny0 = 1.0f - ((y + th + pad) / scr_h) * 2.0f;
+		float nx1 = (right_x / scr_w) * 2.0f - 1.0f;
+		float ny1 = 1.0f - ((y - pad) / scr_h) * 2.0f;
+
+		/* Barra de seleção azul */
+		draw_rect(nx0, ny0, nx1, ny1, MC_SEL_R, MC_SEL_G, MC_SEL_B, MC_SEL_A, 0);
+
+		font_render_text(x, y, key, FONT_COLOR_WHITE, item_scale, scr_w, scr_h);
+
+		char val_buf[128];
+		snprintf(val_buf, sizeof(val_buf), "< %s >", value);
+		float vw = font_text_width(val_buf, item_scale);
+		float val_x = right_x - 24.0f - vw;
+		font_render_text(val_x, y, val_buf, FONT_COLOR_YELLOW, item_scale, scr_w, scr_h);
+	} else {
+		font_render_text(x, y, key, FONT_COLOR_GRAY, item_scale, scr_w, scr_h);
+
+		float vw = font_text_width(value, item_scale);
+		float val_x = right_x - 24.0f - vw;
+		font_render_text(val_x, y, value, FONT_COLOR_GRAY, item_scale, scr_w, scr_h);
+	}
+
+	return y + font_text_height(item_scale) + 12.0f;
 }
 
 /* ─────────────────── Button name helper ─────────────────── */
@@ -432,22 +626,27 @@ static pad_kind_t detect_pad_kind(int port)
 static const char *physical_button_name(int port, unsigned code)
 {
 	pad_kind_t k = detect_pad_kind(port);
+	static char phys_btn_buf[64];
 
 	switch (code) {
-		case REMAP_PHYS_NONE: return "(nenhum)";
-		case REMAP_PHYS_LT:   return k == PAD_PLAYSTATION ? "L2 (gatilho)" : "LT (gatilho)";
-		case REMAP_PHYS_RT:   return k == PAD_PLAYSTATION ? "R2 (gatilho)" : "RT (gatilho)";
+		case REMAP_PHYS_NONE: return lang_get(STR_BTN_NONE);
+		case REMAP_PHYS_LT:
+			snprintf(phys_btn_buf, sizeof(phys_btn_buf), lang_get(STR_BTN_GATILHO), k == PAD_PLAYSTATION ? "L2" : "LT");
+			return phys_btn_buf;
+		case REMAP_PHYS_RT:
+			snprintf(phys_btn_buf, sizeof(phys_btn_buf), lang_get(STR_BTN_GATILHO), k == PAD_PLAYSTATION ? "R2" : "RT");
+			return phys_btn_buf;
 	}
 
 	switch (code) {
 		case GLFW_GAMEPAD_BUTTON_A:
 			return k == PAD_PLAYSTATION ? "X (Cross)" : k == PAD_NINTENDO ? "B" : "A";
 		case GLFW_GAMEPAD_BUTTON_B:
-			return k == PAD_PLAYSTATION ? "Circulo" : k == PAD_NINTENDO ? "A" : "B";
+			return k == PAD_PLAYSTATION ? lang_get(STR_BTN_CIRCLE) : k == PAD_NINTENDO ? "A" : "B";
 		case GLFW_GAMEPAD_BUTTON_X:
-			return k == PAD_PLAYSTATION ? "Quadrado" : k == PAD_NINTENDO ? "Y" : "X";
+			return k == PAD_PLAYSTATION ? lang_get(STR_BTN_SQUARE) : k == PAD_NINTENDO ? "Y" : "X";
 		case GLFW_GAMEPAD_BUTTON_Y:
-			return k == PAD_PLAYSTATION ? "Triangulo" : k == PAD_NINTENDO ? "X" : "Y";
+			return k == PAD_PLAYSTATION ? lang_get(STR_BTN_TRIANGLE) : k == PAD_NINTENDO ? "X" : "Y";
 		case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER:  return k == PAD_PLAYSTATION ? "L1" : "LB";
 		case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: return k == PAD_PLAYSTATION ? "R1" : "RB";
 		case GLFW_GAMEPAD_BUTTON_BACK:         return "Select/Back";
@@ -455,10 +654,18 @@ static const char *physical_button_name(int port, unsigned code)
 		case GLFW_GAMEPAD_BUTTON_GUIDE:        return "Guide";
 		case GLFW_GAMEPAD_BUTTON_LEFT_THUMB:   return "L3";
 		case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB:  return "R3";
-		case GLFW_GAMEPAD_BUTTON_DPAD_UP:      return "D-Cima";
-		case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT:   return "D-Dir";
-		case GLFW_GAMEPAD_BUTTON_DPAD_DOWN:    return "D-Baixo";
-		case GLFW_GAMEPAD_BUTTON_DPAD_LEFT:    return "D-Esq";
+		case GLFW_GAMEPAD_BUTTON_DPAD_UP:
+			snprintf(phys_btn_buf, sizeof(phys_btn_buf), "D-%s", lang_get(STR_BTN_UP));
+			return phys_btn_buf;
+		case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT:
+			snprintf(phys_btn_buf, sizeof(phys_btn_buf), "D-%s", lang_get(STR_BTN_RIGHT));
+			return phys_btn_buf;
+		case GLFW_GAMEPAD_BUTTON_DPAD_DOWN:
+			snprintf(phys_btn_buf, sizeof(phys_btn_buf), "D-%s", lang_get(STR_BTN_DOWN));
+			return phys_btn_buf;
+		case GLFW_GAMEPAD_BUTTON_DPAD_LEFT:
+			snprintf(phys_btn_buf, sizeof(phys_btn_buf), "D-%s", lang_get(STR_BTN_LEFT));
+			return phys_btn_buf;
 		default: return "?";
 	}
 }
@@ -470,11 +677,8 @@ static const char *physical_button_name(int port, unsigned code)
 
 static void render_page_main(void)
 {
-	float x = scr_w * 0.1f;
-	float y = scr_h * 0.15f;
-
-	y = render_item(x, y, lang_get(STR_SETTINGS), false, true);
-	y += 10.0f;
+	float x, y;
+	get_page_start_coords(&x, &y);
 
 	const char *items[MAIN_ITEMS] = {
 		lang_get(STR_RESUME),
@@ -492,11 +696,6 @@ static void render_page_main(void)
 		else
 			y = render_item(x, y, items[i], i == menu_sel, false);
 	}
-
-	/* Footer hint */
-	float fy = scr_h * 0.9f;
-	font_render_text(x, fy, lang_get(STR_HINT_MAIN),
-	                 FONT_COLOR_GRAY, scale * 0.7f, scr_w, scr_h);
 }
 
 static bool input_page_main(void)
@@ -514,6 +713,7 @@ static bool input_page_main(void)
 	if (menu_sel == 5 && (nav_left() || nav_right()) && input_debounce()) {
 		int dir = nav_right() ? 1 : -1;
 		lang_cycle(dir);
+		font_clear_unicode_cache();
 	}
 
 	if (nav_confirm()) {
@@ -523,7 +723,7 @@ static bool input_page_main(void)
 			case 2: menu_page = MENU_PAGE_AUDIO; menu_sel = 0; break;
 			case 3: menu_page = MENU_PAGE_INPUT; menu_sel = 0; break;
 			case 4: menu_page = MENU_PAGE_CORE_OPTIONS; menu_sel = 0; menu_scroll = 0; break;
-			case 5: lang_cycle(1); break; /* Language: cycle on confirm */
+			case 5: lang_cycle(1); font_clear_unicode_cache(); break; /* Language: cycle on confirm */
 			case 6: menu_page = MENU_PAGE_CONFIRM_EXIT; menu_sel = 0; break;
 		}
 	}
@@ -536,11 +736,8 @@ static bool input_page_main(void)
 /* Video Settings */
 static void render_page_video(void)
 {
-	float x = scr_w * 0.1f;
-	float y = scr_h * 0.15f;
-
-	y = render_item(x, y, lang_get(STR_VIDEO_HEADER), false, true);
-	y += 10.0f;
+	float x, y;
+	get_page_start_coords(&x, &y);
 
 	const char *fs_val = video_is_fullscreen() ? lang_get(STR_ON) : lang_get(STR_OFF);
 	y = render_kv_item(x, y, lang_get(STR_FULLSCREEN), fs_val, menu_sel == 0);
@@ -553,10 +750,6 @@ static void render_page_video(void)
 
 	y += 10.0f;
 	y = render_item(x, y, lang_get(STR_BACK), menu_sel == 4, false);
-
-	float fy = scr_h * 0.9f;
-	font_render_text(x, fy, lang_get(STR_HINT_VIDEO),
-	                 FONT_COLOR_GRAY, scale * 0.7f, scr_w, scr_h);
 }
 
 static bool input_page_video(void)
@@ -626,11 +819,8 @@ static bool input_page_video(void)
 /* Audio Settings */
 static void render_page_audio(void)
 {
-	float x = scr_w * 0.1f;
-	float y = scr_h * 0.15f;
-
-	y = render_item(x, y, lang_get(STR_AUDIO_HEADER), false, true);
-	y += 10.0f;
+	float x, y;
+	get_page_start_coords(&x, &y);
 
 	char vol[16];
 	snprintf(vol, sizeof(vol), "%d%%", audio_get_volume());
@@ -641,9 +831,6 @@ static void render_page_audio(void)
 
 	y += 10.0f;
 	y = render_item(x, y, lang_get(STR_BACK), menu_sel == 2, false);
-
-	float fy = scr_h * 0.9f;
-	font_render_text(x, fy, lang_get(STR_HINT_AUDIO), FONT_COLOR_GRAY, scale * 0.7f, scr_w, scr_h);
 }
 
 static bool input_page_audio(void)
@@ -696,27 +883,19 @@ static int remap_port_sel = 0; /* Which port we're configuring */
 
 static void render_page_input(void)
 {
-	float x = scr_w * 0.08f;
-	float y = scr_h * 0.05f;
-	char buf[192];
+	float x, y;
+	get_page_start_coords(&x, &y);
+	char buf[256];
 
-	y = render_item(x, y, lang_get(STR_INPUT_HEADER), false, true);
-	y += 4.0f;
-
-	/* Cabeçalho: console emulado + origem dos nomes */
-	snprintf(buf, sizeof(buf), "%s: %s", lang_get(STR_EMULATED_PAD),
-		input_profile_display_name(menu_active_profile()));
-	y = render_item(x, y, buf, false, false);
-
-	const char *src = game_profile_active() ? game_profile_name()
-		: (input_desc_available() ? lang_get(STR_SRC_CORE)
-		                          : lang_get(STR_SRC_FALLBACK));
+	const char *src = input_profile_display_name(menu_active_profile());
+	if (!src || !src[0]) src = lang_get(STR_SRC_FALLBACK);
 	snprintf(buf, sizeof(buf), "%s: %s", lang_get(STR_NAME_SOURCE), src);
-	font_render_text(x, y, buf, FONT_COLOR_GRAY, scale * 0.65f, scr_w, scr_h);
+	font_render_text(x, y, buf, FONT_COLOR_HINT, scale * 0.65f, scr_w, scr_h);
 	y += font_text_height(scale) + 8.0f;
 
 	/* Lista rolável: porta + 16 botões + reset + descritores + voltar */
-	int visible = (int)((scr_h * 0.86f - y) / (font_text_height(scale) + 4.0f));
+	float bottom_limit = (modal_h > 0.0f) ? (modal_y + modal_h - 24.0f) : (scr_h * 0.90f);
+	int visible = (int)((bottom_limit - y) / (font_text_height(scale) + 12.0f));
 	if (visible < 4) visible = 4;
 	if (menu_sel < menu_scroll) menu_scroll = menu_sel;
 	if (menu_sel >= menu_scroll + visible) menu_scroll = menu_sel - visible + 1;
@@ -747,10 +926,6 @@ static void render_page_input(void)
 			y = render_item(x, y, lang_get(STR_BACK), sel, false);
 		}
 	}
-
-	float fy = scr_h * 0.94f;
-	font_render_text(x, fy, lang_get(STR_HINT_INPUT2),
-	                 FONT_COLOR_GRAY, scale * 0.6f, scr_w, scr_h);
 }
 
 static bool input_page_input(void)
@@ -853,12 +1028,9 @@ static bool input_page_input(void)
 /* ── Tela de depuração: descritores informados pelo core ── */
 static void render_page_descriptors(void)
 {
-	float x = scr_w * 0.06f;
-	float y = scr_h * 0.06f;
+	float x, y;
+	get_page_start_coords(&x, &y);
 	char buf[192];
-
-	y = render_item(x, y, lang_get(STR_DESC_HEADER), false, true);
-	y += 8.0f;
 
 	int count = (int)input_desc_count();
 	if (count == 0) {
@@ -867,7 +1039,8 @@ static void render_page_descriptors(void)
 			input_profile_display_name(menu_active_profile()));
 		render_item(x, y, buf, false, false);
 	} else {
-		int visible = (int)((scr_h * 0.82f - y) / (font_text_height(scale) + 3.0f));
+		float bottom_limit = (modal_h > 0.0f) ? (modal_y + modal_h - 24.0f) : (scr_h * 0.90f);
+		int visible = (int)((bottom_limit - y) / (font_text_height(scale) + 12.0f));
 		if (visible < 1) visible = 1;
 		if (menu_scroll > count - visible) menu_scroll = count - visible;
 		if (menu_scroll < 0) menu_scroll = 0;
@@ -880,10 +1053,6 @@ static void render_page_descriptors(void)
 			y = render_item(x, y, buf, false, false);
 		}
 	}
-
-	float fy = scr_h * 0.94f;
-	font_render_text(x, fy, lang_get(STR_HINT_DESCRIPTORS),
-	                 FONT_COLOR_GRAY, scale * 0.62f, scr_w, scr_h);
 }
 
 static bool input_page_descriptors(void)
@@ -906,17 +1075,15 @@ static bool input_page_descriptors(void)
 /* Core Options page */
 static void render_page_core_options(void)
 {
-	float x = scr_w * 0.1f;
-	float y = scr_h * 0.1f;
-
-	y = render_item(x, y, lang_get(STR_CORE_OPT_HEADER), false, true);
-	y += 10.0f;
+	float x, y;
+	get_page_start_coords(&x, &y);
 
 	int count = opt_count();
 	if (count == 0) {
 		y = render_item(x, y, lang_get(STR_NO_CORE_OPTIONS), false, false);
 	} else {
-		int visible_items = (int)((scr_h * 0.7f) / (font_text_height(scale) + 4.0f));
+		float bottom_limit = (modal_h > 0.0f) ? (modal_y + modal_h - 24.0f) : (scr_h * 0.90f);
+		int visible_items = (int)((bottom_limit - y) / (font_text_height(scale) + 12.0f));
 		if (visible_items < 1) visible_items = 1;
 
 		if (menu_sel < menu_scroll) menu_scroll = menu_sel;
@@ -939,10 +1106,6 @@ static void render_page_core_options(void)
 			}
 		}
 	}
-
-	float fy = scr_h * 0.92f;
-	font_render_text(x, fy, lang_get(STR_HINT_CORE_OPTIONS),
-	                 FONT_COLOR_GRAY, scale * 0.7f, scr_w, scr_h);
 }
 
 static bool input_page_core_options(void)
@@ -985,11 +1148,9 @@ static bool input_page_core_options(void)
 /* Confirm Exit page */
 static void render_page_confirm_exit(void)
 {
-	float x = scr_w * 0.3f;
-	float y = scr_h * 0.35f;
+	float x, y;
+	get_page_start_coords(&x, &y);
 
-	y = render_item(x, y, lang_get(STR_EXIT_CONFIRM), false, true);
-	y += 20.0f;
 	y = render_item(x, y, lang_get(STR_YES_QUIT), menu_sel == 0, false);
 	y = render_item(x, y, lang_get(STR_NO_CANCEL), menu_sel == 1, false);
 }
@@ -1017,8 +1178,8 @@ static bool input_page_confirm_exit(void)
 
 static void render_page_aspect(void)
 {
-	float x = scr_w * 0.1f;
-	float y = scr_h * 0.15f;
+	float x, y;
+	get_page_start_coords(&x, &y);
 
 	y = render_item(x, y, lang_get(STR_ASPECT_HEADER), false, true);
 	y += 10.0f;
@@ -1117,8 +1278,8 @@ static bool input_page_aspect(void)
 
 static void render_page_aspect_edit(void)
 {
-	float x = scr_w * 0.1f;
-	float y = scr_h * 0.15f;
+	float x, y;
+	get_page_start_coords(&x, &y);
 	bool is_zoom = (aspect_get_mode() == ASPECT_ZOOM);
 
 	y = render_item(x, y, lang_get(STR_ASPECT_CUSTOM_EDIT), false, true);
@@ -1260,6 +1421,33 @@ bool menu_input(void)
 	return false;
 }
 
+static const char *menu_get_page_title(void)
+{
+	switch (menu_page) {
+		case MENU_PAGE_MAIN:         return lang_get(STR_SETTINGS);
+		case MENU_PAGE_VIDEO:        return lang_get(STR_VIDEO_HEADER);
+		case MENU_PAGE_AUDIO:        return lang_get(STR_AUDIO_HEADER);
+		case MENU_PAGE_INPUT:        return lang_get(STR_INPUT_HEADER);
+		case MENU_PAGE_DESCRIPTORS:  return lang_get(STR_DESC_HEADER);
+		case MENU_PAGE_CORE_OPTIONS: return lang_get(STR_CORE_OPT_HEADER);
+		case MENU_PAGE_CONFIRM_EXIT: return lang_get(STR_EXIT_CONFIRM);
+		default: return "";
+	}
+}
+
+static const char *menu_get_page_hint(void)
+{
+	switch (menu_page) {
+		case MENU_PAGE_MAIN:         return lang_get(STR_HINT_MAIN);
+		case MENU_PAGE_VIDEO:        return lang_get(STR_HINT_VIDEO);
+		case MENU_PAGE_AUDIO:        return lang_get(STR_HINT_AUDIO);
+		case MENU_PAGE_INPUT:        return lang_get(STR_HINT_INPUT2);
+		case MENU_PAGE_DESCRIPTORS:  return lang_get(STR_HINT_DESCRIPTORS);
+		case MENU_PAGE_CORE_OPTIONS: return lang_get(STR_HINT_CORE_OPTIONS);
+		default: return NULL;
+	}
+}
+
 void menu_render(void)
 {
 	if (menu_sw_buf) {
@@ -1272,15 +1460,27 @@ void menu_render(void)
 	}
 	if (scr_w <= 0 || scr_h <= 0) return;
 
-	/* Calculate text scale based on screen height */
-	scale = (float)scr_h / 480.0f * 1.5f;
+	/* Escala de fonte estilo Ozone: base 540px, máx 2.5x */
+	scale = (float)scr_h / 540.0f * 1.5f;
 	if (scale < 1.0f) scale = 1.0f;
-	if (scale > 3.0f) scale = 3.0f;
+	if (scale > 2.5f) scale = 2.5f;
 
 	if (!menu_sw_buf)
 		glViewport(0, 0, scr_w, scr_h);
 
-	float bg_alpha = 0.78f;
+	/* Calcular coordenadas e dimensões do modal centralizado globalmente */
+	bool is_popup = (menu_page == MENU_PAGE_CONFIRM_EXIT);
+	if (is_popup) {
+		modal_w = scr_w * 0.44f;
+		modal_h = scr_h * 0.30f;
+	} else {
+		modal_w = scr_w * 0.55f;
+		modal_h = scr_h * 0.72f;
+	}
+	modal_x = (scr_w - modal_w) * 0.5f;
+	modal_y = (scr_h - modal_h) * 0.5f - (scr_h * 0.02f);
+
+	float bg_alpha = MC_BG_A;
 	if (menu_page == MENU_PAGE_VIDEO && (menu_sel == 1 || menu_sel == 2)) {
 		bg_alpha = 0.0f; /* 100% transparent so user can preview shaders */
 	} else if (menu_page == MENU_PAGE_ASPECT || menu_page == MENU_PAGE_ASPECT_EDIT) {
@@ -1289,6 +1489,11 @@ void menu_render(void)
 
 	/* Draw semi-transparent background */
 	render_overlay_bg(bg_alpha);
+
+	/* Draw global Carbon panel/header/footer if not in transparent mode */
+	if (bg_alpha > 0.0f) {
+		render_panel(menu_get_page_title(), menu_get_page_hint(), is_popup);
+	}
 
 	/* Draw current page */
 	switch (menu_page) {
