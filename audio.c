@@ -10,6 +10,10 @@
 #include <stdbool.h>
 #include <pthread.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#endif
+
 #ifdef __APPLE__
 #include <OpenAL/al.h>
 #include <OpenAL/alc.h>
@@ -113,8 +117,12 @@ static bool get_buffer(ALuint *buffer)
 				}
 				if (++spins > 2500) /* ~0,5 s: desiste e descarta o áudio */
 					return false;
+#if defined(_WIN32)
+				Sleep(1);
+#else
 				struct timespec ts = {0, 200000}; /* 0,2 ms */
 				nanosleep(&ts, NULL);
+#endif
 			}
 		}
 	}
@@ -340,8 +348,12 @@ static void *audio_thread_func(void *arg)
 	while (audio_thread_running) {
 		if (!audio_cb_active || !audio_cb.callback || !al) {
 			/* Core not ready yet or callback cleared — wait a bit */
+#if defined(_WIN32)
+			Sleep(1);
+#else
 			struct timespec ts = {0, 1000000}; /* 1 ms */
 			nanosleep(&ts, NULL);
+#endif
 			continue;
 		}
 
@@ -356,8 +368,12 @@ static void *audio_thread_func(void *arg)
 		/* During fast-forward, nonblocking==true and get_buffer never blocks.
 		 * Without a sleep the thread would spin at 100% CPU. */
 		if (nonblocking) {
+#if defined(_WIN32)
+			Sleep(1);
+#else
 			struct timespec ts = {0, 1000000}; /* 1 ms */
 			nanosleep(&ts, NULL);
+#endif
 		}
 	}
 

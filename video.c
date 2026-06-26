@@ -70,10 +70,6 @@ static struct {
 } shader = {0};
 
 static unsigned long long video_refresh_count = 0;
-/* Tamanho atual da textura de software (para usar glTexSubImage2D em vez de
- * recriar a textura todo frame). Reiniciado em video_configure. */
-static unsigned sw_last_w = 0;
-static unsigned sw_last_h = 0;
 static unsigned long long video_probe_count = 0;
 static unsigned long long video_proc_lookup_count = 0;
 static unsigned long long video_fb_callback_count = 0;
@@ -359,12 +355,19 @@ static void core_ratio_viewport()
 	float y3 = y;
 	float y4 = y + h;
 
+	float max_u = 1.0f;
+	float max_v = 1.0f;
+	if (video.tex_w > 0 && video.tex_h > 0) {
+		max_u = (float)video.clip_w / (float)video.tex_w;
+		max_v = (float)video.clip_h / (float)video.tex_h;
+	}
+
 	float vertex_data[] = {
 		//  X, Y, U, V
-		x1/ffbw*2 - 1, y1/ffbh*2 - 1, 0, 1, // left-bottom
-		x2/ffbw*2 - 1, y2/ffbh*2 - 1, 0, 0, // left-top
-		x3/ffbw*2 - 1, y3/ffbh*2 - 1, 1, 1, // right-bottom
-		x4/ffbw*2 - 1, y4/ffbh*2 - 1, 1, 0, // right-top
+		x1/ffbw*2 - 1, y1/ffbh*2 - 1, 0.0f, max_v, // left-bottom
+		x2/ffbw*2 - 1, y2/ffbh*2 - 1, 0.0f, 0.0f,  // left-top
+		x3/ffbw*2 - 1, y3/ffbh*2 - 1, max_u, max_v, // right-bottom
+		x4/ffbw*2 - 1, y4/ffbh*2 - 1, max_u, 0.0f,  // right-top
 	};
 
 	glBindVertexArray(shader.vao);
@@ -830,10 +833,6 @@ void video_configure(const struct retro_game_geometry *geom)
 
 	init_framebuffer(geom->max_width, geom->max_height);
 
-	/* Textura recriada: força glTexImage2D no próximo frame de software. */
-	sw_last_w = 0;
-	sw_last_h = 0;
-
 	video.tex_w = geom->max_width;
 	video.tex_h = geom->max_height;
 	video.clip_w = geom->base_width;
@@ -879,8 +878,8 @@ void video_set_geometry(const struct retro_game_geometry *geom)
 		return;
 	}
 
-	video.tex_w = geom->max_width;
-	video.tex_h = geom->max_height;
+	/* Mantém video.tex_w/h com as dimensões máximas originais alocadas em video_configure,
+	 * para que as coordenadas de textura sejam mapeadas corretamente na sub-imagem ativa. */
 	video.clip_w = geom->base_width;
 	video.clip_h = geom->base_height;
 	video.aspect_ratio = resolve_core_aspect_ratio(geom);
@@ -900,11 +899,9 @@ bool video_set_pixel_format(unsigned format)
 
 	switch (format) {
 		case RETRO_PIXEL_FORMAT_0RGB1555:
-			/* 0RGB1555: bit 15 ignorado, R 14-10, G 9-5, B 4-0 → casa com
-			 * GL_UNSIGNED_SHORT_1_5_5_5_REV + GL_BGRA. */
-			video.pixfmt = GL_UNSIGNED_SHORT_1_5_5_5_REV;
+			video.pixfmt  = GL_UNSIGNED_SHORT_5_5_5_1;
 			video.pixtype = GL_BGRA;
-			video.bpp = sizeof(uint16_t);
+			video.bpp     = sizeof(uint16_t);
 			break;
 		case RETRO_PIXEL_FORMAT_XRGB8888:
 			video.pixfmt = GL_UNSIGNED_INT_8_8_8_8_REV;
@@ -976,19 +973,14 @@ void video_refresh(const void *data, unsigned width, unsigned height, size_t pit
 	glUseProgram(shader.program);
 	glUniform2f(shader.u_tex_size, (float)width, (float)height);
 
-	/* Recria a textura só quando o tamanho muda; senão atualiza o conteúdo
-	 * (glTexSubImage2D) sem realocar todo frame. */
-	if (width != sw_last_w || height != sw_last_h) {
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0,
-		             video.pixtype, video.pixfmt, data);
-		sw_last_w = width;
-		sw_last_h = height;
-	} else {
-		glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
-		                video.pixtype, video.pixfmt, data);
-	}
+	/* Sempre usa glTexSubImage2D para atualizar o conteúdo da sub-imagem
+	 * ativa sem recriar/redimensionar a textura (o que quebraria o tamanho do FBO). */
+	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height,
+	                video.pixtype, video.pixfmt, data);
 
+	glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+	glBindTexture(GL_TEXTURE_2D, 0);
 	glUseProgram(0);
 	log_gl_errors("video_refresh");
 }
@@ -1000,9 +992,6 @@ void video_gl_unbind(void)
 		return;
 	}
 
-	/* Clear all GL state before handing control to the core.
-	   HW-rendering cores (N64/GlideN64, PPSSPP, Beetle PSX HW)
-	   expect a clean slate so their own VAO/VBO/program binds work. */
 	reset_frontend_gl_state();
 
 	if (video.fbo_id) {
@@ -1033,6 +1022,7 @@ void video_gl_rebind(void)
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 	if (video_refresh_count <= 10 || video_refresh_count % 300 == 0)
 		log_framebuffer_state("video_gl_rebind");
+
 	log_gl_errors("video_gl_rebind");
 }
 

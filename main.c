@@ -936,10 +936,14 @@ int main(int argc, char *argv[]) {
 				frame_deadline += target;
 				double remaining = frame_deadline - glfwGetTime();
 				if (remaining > 0.003) {
+#if defined(_WIN32)
+					Sleep((DWORD)((remaining - 0.002) * 1000.0));
+#else
 					struct timespec ts;
 					ts.tv_sec  = 0;
 					ts.tv_nsec = (long)((remaining - 0.002) * 1e9);
 					nanosleep(&ts, NULL);
+#endif
 				}
 				while (glfwGetTime() < frame_deadline) { /* spin final curto */ }
 			}

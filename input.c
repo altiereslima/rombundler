@@ -43,6 +43,7 @@ struct keymap kbd2joy_binds[] = {
 	{ GLFW_KEY_W, RETRO_DEVICE_ID_JOYPAD_R },
 	{ GLFW_KEY_1, RETRO_DEVICE_ID_JOYPAD_L2 },
 	{ GLFW_KEY_2, RETRO_DEVICE_ID_JOYPAD_R2 },
+	{ 0, 0 }
 };
 
 /* Mapeamento teclado completo → libretro keyboard */

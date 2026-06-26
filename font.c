@@ -847,6 +847,62 @@ float font_text_height(float scale)
 	return 22.0f * scale;
 }
 
+typedef struct {
+	GLint program;
+	GLint active_texture;
+	GLint texture;
+	GLint vao;
+	GLint vbo;
+	GLint unpack_row_length;
+	GLint unpack_alignment;
+	GLint viewport[4];
+	GLboolean blend_enabled;
+	GLint blend_src_rgb;
+	GLint blend_dst_rgb;
+	GLint blend_src_alpha;
+	GLint blend_dst_alpha;
+	GLint blend_eq_rgb;
+	GLint blend_eq_alpha;
+} font_gl_state_t;
+
+static void font_push_gl_state(font_gl_state_t *state)
+{
+	glGetIntegerv(GL_CURRENT_PROGRAM, &state->program);
+	glGetIntegerv(GL_ACTIVE_TEXTURE, &state->active_texture);
+	glGetIntegerv(GL_TEXTURE_BINDING_2D, &state->texture);
+	glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &state->vao);
+	glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &state->vbo);
+	glGetIntegerv(GL_UNPACK_ROW_LENGTH, &state->unpack_row_length);
+	glGetIntegerv(GL_UNPACK_ALIGNMENT, &state->unpack_alignment);
+	glGetIntegerv(GL_VIEWPORT, state->viewport);
+	state->blend_enabled = glIsEnabled(GL_BLEND);
+	glGetIntegerv(GL_BLEND_SRC_RGB, &state->blend_src_rgb);
+	glGetIntegerv(GL_BLEND_DST_RGB, &state->blend_dst_rgb);
+	glGetIntegerv(GL_BLEND_SRC_ALPHA, &state->blend_src_alpha);
+	glGetIntegerv(GL_BLEND_DST_ALPHA, &state->blend_dst_alpha);
+	glGetIntegerv(GL_BLEND_EQUATION_RGB, &state->blend_eq_rgb);
+	glGetIntegerv(GL_BLEND_EQUATION_ALPHA, &state->blend_eq_alpha);
+}
+
+static void font_pop_gl_state(const font_gl_state_t *state)
+{
+	glUseProgram(state->program);
+	glActiveTexture(state->active_texture);
+	glBindTexture(GL_TEXTURE_2D, state->texture);
+	glBindVertexArray(state->vao);
+	glBindBuffer(GL_ARRAY_BUFFER, state->vbo);
+	glPixelStorei(GL_UNPACK_ROW_LENGTH, state->unpack_row_length);
+	glPixelStorei(GL_UNPACK_ALIGNMENT, state->unpack_alignment);
+	glViewport(state->viewport[0], state->viewport[1], state->viewport[2], state->viewport[3]);
+	if (state->blend_enabled)
+		glEnable(GL_BLEND);
+	else
+		glDisable(GL_BLEND);
+	glBlendFuncSeparate(state->blend_src_rgb, state->blend_dst_rgb,
+	                    state->blend_src_alpha, state->blend_dst_alpha);
+	glBlendEquationSeparate(state->blend_eq_rgb, state->blend_eq_alpha);
+}
+
 void font_render_text(float x, float y, const char *text,
                       font_color color, float scale,
                       int screen_w, int screen_h)
@@ -866,17 +922,22 @@ void font_render_text(float x, float y, const char *text,
 
 	if (!font_shader) return;
 
-#ifdef _WIN32
-	if (font_needs_unicode_fallback(text)) {
-		font_render_unicode_text(x, y, text, color, scale, screen_w, screen_h);
-		return;
-	}
-#endif
-
 	int len = (int)strlen(text);
 	int max_verts = len * 6; /* 2 triangles per char */
 	float *verts = (float*)malloc(max_verts * 4 * sizeof(float)); /* x,y,u,v */
 	if (!verts) return;
+
+	font_gl_state_t gl_state;
+	font_push_gl_state(&gl_state);
+
+#ifdef _WIN32
+	if (font_needs_unicode_fallback(text)) {
+		font_render_unicode_text(x, y, text, color, scale, screen_w, screen_h);
+		free(verts);
+		font_pop_gl_state(&gl_state);
+		return;
+	}
+#endif
 
 	int vi = 0;
 	float factor = (22.0f * scale) / 48.0f;
@@ -944,10 +1005,7 @@ void font_render_text(float x, float y, const char *text,
 
 	glDisableVertexAttribArray(font_i_pos);
 	glDisableVertexAttribArray(font_i_coord);
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glBindVertexArray(0);
-	glUseProgram(0);
-	glDisable(GL_BLEND);
-
 	free(verts);
+
+	font_pop_gl_state(&gl_state);
 }

@@ -263,17 +263,7 @@ static unsigned count_subsystem_infos(const struct retro_subsystem_info *info)
 
 static bool should_log_variable_lookup(const char *key)
 {
-	if (!key)
-		return false;
-
-	return strcmp(key, "mupen64plus-rdp-plugin") == 0 ||
-		strcmp(key, "mupen64plus-rsp-plugin") == 0 ||
-		strcmp(key, "mupen64plus-ThreadedRenderer") == 0 ||
-		strcmp(key, "mupen64plus-EnableFBEmulation") == 0 ||
-		strcmp(key, "puae_use_whdload") == 0 ||
-		strcmp(key, "puae_use_whdload_prefs") == 0 ||
-		strcmp(key, "puae_use_boot_hd") == 0 ||
-		strcmp(key, "puae_model_hd") == 0;
+	return true;
 }
 
 static bool core_path_contains(const char *needle);
@@ -1913,6 +1903,22 @@ void core_load_game(const char *filename)
 			die("The core could not read the file.");
 		fclose(file);
 		file = NULL;
+		if (info.size >= 16) {
+			const unsigned char *ptr = (const unsigned char *)info.data;
+			log_printf("core", "ROM Header: %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X",
+				ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7],
+				ptr[8], ptr[9], ptr[10], ptr[11], ptr[12], ptr[13], ptr[14], ptr[15]);
+			if (info.size >= 300) {
+				char ascii_header[64];
+				int k;
+				for (k = 0; k < 48; k++) {
+					unsigned char c = ptr[256 + k];
+					ascii_header[k] = (c >= 32 && c < 127) ? c : '.';
+				}
+				ascii_header[48] = '\0';
+				log_printf("core", "ROM Header Text (0x100): '%s'", ascii_header);
+			}
+		}
 	} else {
 		file = vfs_fopen(content_path, "rb");
 		if (!file)
